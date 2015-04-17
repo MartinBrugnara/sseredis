@@ -20,6 +20,8 @@ func main() {
 	flag.Parse()
 	LOG_LEVEL = LOG_STR_LV[*log_lv]
 
+	Info("Log level: %s", LOG_LV_STR[LOG_LEVEL])
+
 	if err := Bootstrap(*redisServer); err != nil {
 		return
 	}

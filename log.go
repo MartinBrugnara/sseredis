@@ -27,7 +27,7 @@ var (
 		ERROR:   "ERROR",
 	}
 
-	LOG_LEVEL = INFO
+	LOG_LEVEL int
 )
 
 func ext_log(level int, format string, a ...interface{}) {
