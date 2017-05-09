@@ -3,13 +3,16 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
 )
 
+// Log levels
 const (
 	DEBUG = 1 << iota
 	INFO
 	WARNING
 	ERROR
+	FATAL
 )
 
 var (
@@ -18,6 +21,7 @@ var (
 		"INFO":    INFO,
 		"WARNING": WARNING,
 		"ERROR":   ERROR,
+		"FATAL":   ERROR,
 	}
 
 	LOG_LV_STR = map[int]string{
@@ -25,6 +29,7 @@ var (
 		INFO:    "INFO",
 		WARNING: "WARNING",
 		ERROR:   "ERROR",
+		FATAL:   "ERROR",
 	}
 
 	LOG_LEVEL int
@@ -50,4 +55,9 @@ func Warn(format string, a ...interface{}) {
 
 func Error(format string, a ...interface{}) {
 	ext_log(ERROR, format, a...)
+}
+
+func Fatal(format string, a ...interface{}) {
+	ext_log(FATAL, format, a...)
+	os.Exit(1)
 }
