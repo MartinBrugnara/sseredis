@@ -1,9 +1,7 @@
 package main
 
 import (
-	"errors"
 	"flag"
-	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -12,12 +10,12 @@ import (
 )
 
 var (
-	djangoServer = flag.String("dmbcau", "http://dmbcau/authenticator/", "dmbcau auth API endpoint")
-	redisServer  = flag.String("redis", "redis:6379", "redis server address")
-	listenAddr   = flag.String("listen", ":80", "Address to bind")
-	acao         = flag.String("origin", "*", "Access-Control-Allow-Origin")
+	redisServer = flag.String("redis", "redis:6379", "redis server address")
+	listenAddr  = flag.String("listen", ":80", "Address to bind")
+	acao        = flag.String("origin", "*", "Access-Control-Allow-Origin")
 
-	psc *redis.PubSubConn
+	psc      *redis.PubSubConn
+	authFunc = djangoAuth
 )
 
 func main() {
@@ -73,7 +71,8 @@ func sseHandler(ops chan func(Db), manager ChannelManager) func(w http.ResponseW
 		w.Header().Set("Access-Control-Allow-Origin", *acao)
 		Debug("Sent Headers to %s", ip)
 
-		if err := auth(w, r); err != nil {
+		if err := authFunc(w, r); err != nil {
+			Debug("Authentication failed for %s", ip)
 			return
 		}
 		client := newClient(w, r)
@@ -91,29 +90,6 @@ func sseHandler(ops chan func(Db), manager ChannelManager) func(w http.ResponseW
 
 		Info("Disconnected %s", ip)
 	}
-}
-
-func auth(w http.ResponseWriter, r *http.Request) error {
-	ip := r.Header.Get("X-Forwarded-For")
-	sessionsID, err := r.Cookie("sessionid")
-	if err != nil {
-		Warn("Not valid cookie for %s", ip)
-		w.WriteHeader(http.StatusUnprocessableEntity)
-		return errors.New("Not valid cookie")
-	}
-
-	query := fmt.Sprintf("%s?sessionid=%s", *djangoServer, sessionsID.Value)
-	if res, err := http.Get(query); err != nil {
-		Error("Django error [%s]: %s", err, ip)
-		w.WriteHeader(http.StatusInternalServerError)
-		return errors.New("Django error")
-	} else if res.StatusCode != http.StatusOK {
-		Warn("Django not OK [%d]: %s", res.StatusCode, ip)
-		w.WriteHeader(res.StatusCode)
-		return errors.New("Django not OK")
-	} // else authenticate
-	Info("Authenticated %s", ip)
-	return nil
 }
 
 func newClient(w http.ResponseWriter, r *http.Request) *Client {
