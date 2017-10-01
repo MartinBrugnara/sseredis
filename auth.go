@@ -1,4 +1,4 @@
-package main
+package sseredis
 
 import (
 	"errors"
@@ -8,14 +8,15 @@ import (
 )
 
 // Authenticator authorize a subscribe request.
-// return error on failure. Nil Otherwise.
 type Authenticator interface {
-	auth(w http.ResponseWriter, r *http.Request) error
+	// Auth returns error on failure, nil otherwise.
+	Auth(w http.ResponseWriter, r *http.Request) error
 }
 
 var djangoServer = flag.String("dmbcau", "http://dmbcau/authenticator/", "dmbcau auth API endpoint")
 
-func djangoAuth(w http.ResponseWriter, r *http.Request) error {
+// DjangoAuth authenticate against active Django sessions.
+func DjangoAuth(w http.ResponseWriter, r *http.Request) error {
 	ip := r.Header.Get("X-Forwarded-For")
 	sessionsID, err := r.Cookie("sessionid")
 	if err != nil {
@@ -38,6 +39,7 @@ func djangoAuth(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-func noAuth(w http.ResponseWriter, r *http.Request) error {
+// NoAuth does not enforce authentication.
+func NoAuth(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }

@@ -1,4 +1,4 @@
-package main
+package sseredis
 
 import (
 	"flag"
@@ -15,7 +15,7 @@ var (
 	acao        = flag.String("origin", "*", "Access-Control-Allow-Origin")
 
 	psc      *redis.PubSubConn
-	authFunc = djangoAuth
+	authFunc = DjangoAuth
 )
 
 func main() {
