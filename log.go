@@ -1,4 +1,4 @@
-package sseredis
+package main
 
 import (
 	"fmt"
