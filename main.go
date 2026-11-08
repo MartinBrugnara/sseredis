@@ -5,17 +5,23 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gomodule/redigo/redis"
 )
+
+const timerTick = time.Second * 10
 
 var (
 	redisServer = flag.String("redis", "redis:6379", "redis server address")
 	listenAddr  = flag.String("listen", ":80", "Address to bind")
 	acao        = flag.String("origin", "*", "Access-Control-Allow-Origin")
 
-	psc      *redis.PubSubConn
 	authFunc = DjangoAuth
+
+	// writeTimeout bounds each write to a client, so a stalled client
+	// does not keep its handler around forever.
+	writeTimeout = 30 * time.Second
 )
 
 func main() {
@@ -30,29 +36,25 @@ func main() {
 	Info("Log level: %s", LOG_LV_STR[LOG_LEVEL])
 
 	// Setup Redis
-	if c, err := redis.Dial("tcp", *redisServer); err != nil {
+	c, err := redis.Dial("tcp", *redisServer)
+	if err != nil {
 		Fatal("Connecting to Redis. %s", err)
-	} else {
-		psc = &redis.PubSubConn{Conn: c}
 	}
+	psc := &redis.PubSubConn{Conn: c}
 	Info("Connected to Redis @ %s", *redisServer)
 
-	// Setup sync
-	ops := make(chan func(Db))
-	go loop(ops)
-	go redisLoop(ops)
-	go ping(ops)
-
-	// Prepare to handle guests
-	manager := make(ChannelManager)
+	hub := NewHub(psc)
+	go hub.Run()
+	go redisLoop(psc, hub)
+	go heartbeatLoop(hub, timerTick)
 
 	// Listen for guests
-	http.HandleFunc("/", sseHandler(ops, manager))
+	http.HandleFunc("/", sseHandler(hub))
 	Info("RDY, Listening @ %s", *listenAddr)
 	log.Fatal(http.ListenAndServe(*listenAddr, nil))
 }
 
-func sseHandler(ops chan func(Db), manager ChannelManager) func(w http.ResponseWriter, r *http.Request) {
+func sseHandler(hub *Hub) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ip := r.Header.Get("X-Forwarded-For")
 		if len(ip) == 0 {
@@ -60,8 +62,7 @@ func sseHandler(ops chan func(Db), manager ChannelManager) func(w http.ResponseW
 		}
 		Info("Got connection: %s", ip)
 
-		f, ok := w.(http.Flusher)
-		if !ok {
+		if _, ok := w.(http.Flusher); !ok {
 			Warn("Streaming unsupported: %s", ip)
 			http.Error(w, "Streaming unsupported!", http.StatusInternalServerError)
 			return
@@ -79,29 +80,41 @@ func sseHandler(ops chan func(Db), manager ChannelManager) func(w http.ResponseW
 			Debug("Authentication failed for %s", ip)
 			return
 		}
-		client := newClient(w, r)
-		manager.Subscribe(ops, client)
-		defer manager.Unsubscribe(ops, client)
+		client := newClient(ip, r)
+		hub.Subscribe(client)
+		defer hub.Unsubscribe(client)
 
 		Debug("Serving %s", ip)
-		for msg := range client.out {
-			Debug("Send message %s", ip)
-			if _, err := w.Write(msg); err != nil {
-				break
+		rc := http.NewResponseController(w)
+		for {
+			select {
+			case <-r.Context().Done():
+				Info("Disconnected %s", ip)
+				return
+			case msg, ok := <-client.out:
+				if !ok {
+					Info("Disconnected %s: dropped by the hub", ip)
+					return
+				}
+				Debug("Send message %s", ip)
+				if err := rc.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
+					Debug("Cannot set write deadline for %s: %s", ip, err)
+				}
+				if _, err := w.Write(msg); err != nil {
+					Info("Disconnected %s: %s", ip, err)
+					return
+				}
+				if err := rc.Flush(); err != nil {
+					Info("Disconnected %s: %s", ip, err)
+					return
+				}
 			}
-			f.Flush()
 		}
-
-		Info("Disconnected %s", ip)
 	}
 }
 
-func newClient(w http.ResponseWriter, r *http.Request) *Client {
-	ip := r.Header.Get("X-Forwarded-For")
-	c := &Client{out: make(chan []byte), subs: make(map[string]bool)}
-	Info("Subscribe %s @ %s", ip, strings.Split(r.FormValue("subscribe"), ","))
-	for _, v := range strings.Split(r.FormValue("subscribe"), ",") {
-		c.subs[v] = true
-	}
-	return c
+func newClient(ip string, r *http.Request) *Client {
+	channels := strings.Split(r.FormValue("subscribe"), ",")
+	Info("Subscribe %s @ %s", ip, channels)
+	return newClientFor(ip, channels)
 }
