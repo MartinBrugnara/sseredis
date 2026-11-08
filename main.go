@@ -16,7 +16,7 @@ const timerTick = time.Second * 10
 var (
 	redisServer = flag.String("redis", "redis:6379", "redis server address")
 	listenAddr  = flag.String("listen", ":80", "Address to bind")
-	acao        = flag.String("origin", "*", "Access-Control-Allow-Origin")
+	acao        = flag.String("origin", "", "Origin allowed to connect cross-origin with its cookies (Access-Control-Allow-Origin); empty for same-origin only")
 
 	djangoServer = flag.String("dmbcau", "http://dmbcau/authenticator/", "dmbcau auth API endpoint")
 	authTimeout  = flag.Duration("auth-timeout", 5*time.Second, "Timeout of a call to the auth API")
@@ -90,7 +90,7 @@ func sseHandler(hub *Hub, auth Authenticator) func(w http.ResponseWriter, r *htt
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
 		w.Header().Set("X-Accel-Buffering", "no") // nginx: do not buffer the stream
-		w.Header().Set("Access-Control-Allow-Origin", *acao)
+		setCORSHeaders(w.Header(), *acao)
 		w.WriteHeader(http.StatusOK)
 		rc := http.NewResponseController(w)
 		if err := rc.Flush(); err != nil {
@@ -136,4 +136,21 @@ func requestedChannels(r *http.Request) []string {
 	}
 	slices.Sort(channels)
 	return slices.Compact(channels)
+}
+
+// setCORSHeaders lets the page at origin read the stream. Authentication
+// needs the browser to send cookies, which it does cross-origin only with
+// a named origin and Access-Control-Allow-Credentials (and
+// EventSource(url, {withCredentials: true})). "*" allows any origin but
+// without cookies, so it only makes sense with NoAuth. Empty: same-origin
+// only, no header.
+func setCORSHeaders(h http.Header, origin string) {
+	switch origin {
+	case "":
+	case "*":
+		h.Set("Access-Control-Allow-Origin", "*")
+	default:
+		h.Set("Access-Control-Allow-Origin", origin)
+		h.Set("Access-Control-Allow-Credentials", "true")
+	}
 }

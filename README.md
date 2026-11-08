@@ -16,7 +16,7 @@ go build && ./sseredis -redis redis:6379 -listen :80 -dmbcau http://dmbcau/authe
 | `-listen` | `:80` | Address to bind. |
 | `-dmbcau` | `http://dmbcau/authenticator/` | Django authenticator API (see [Authentication](#authentication)). |
 | `-auth-timeout` | `5s` | Timeout of a call to the authenticator API. |
-| `-origin` | `*` | `Access-Control-Allow-Origin`. |
+| `-origin` | (empty) | Origin allowed to open the stream cross-origin, with its cookies (e.g. `https://app.example.org`). Empty: same-origin only. `*` allows any origin but without cookies, so only without authentication. |
 | `-log` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `FATAL`. |
 
 Tests: `go test -race ./...` (Redis is simulated with miniredis, nothing to install).

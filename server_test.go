@@ -265,3 +265,22 @@ func TestServerHeaders(t *testing.T) {
 		t.Errorf("error answered with Content-Type %q", ct)
 	}
 }
+
+func TestSetCORSHeaders(t *testing.T) {
+	for _, tc := range []struct {
+		origin, allow, credentials string
+	}{
+		{"", "", ""},
+		{"*", "*", ""},
+		{"https://app.example.org", "https://app.example.org", "true"},
+	} {
+		h := http.Header{}
+		setCORSHeaders(h, tc.origin)
+		if got := h.Get("Access-Control-Allow-Origin"); got != tc.allow {
+			t.Errorf("%q: Allow-Origin = %q, want %q", tc.origin, got, tc.allow)
+		}
+		if got := h.Get("Access-Control-Allow-Credentials"); got != tc.credentials {
+			t.Errorf("%q: Allow-Credentials = %q, want %q", tc.origin, got, tc.credentials)
+		}
+	}
+}
