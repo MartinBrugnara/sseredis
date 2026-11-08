@@ -127,6 +127,7 @@ own, so they are never reachable through the public `-listen` address. The repos
 The dashboard over 30 minutes of simulated traffic: about 30 clients on 4 channels, a stalled client now and
 then (dropped by the hub), a fake Django refusing 13% of the sessions and failing 2%, and Redis restarting
 every 10 minutes (down for 20s). CPU and file descriptors are empty because it ran on FreeBSD (see below).
+The full workload is in [`grafana/README.md`](grafana/README.md).
 
 ### Metrics
 
