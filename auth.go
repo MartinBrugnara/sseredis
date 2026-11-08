@@ -1,49 +1,58 @@
 package main
 
 import (
-	"errors"
-	"flag"
+	"fmt"
 	"net/http"
 	"net/url"
 )
 
-// Authenticator authorize a subscribe request.
+// Authenticator authorizes a subscribe request.
 type Authenticator interface {
-	// Auth returns error on failure, nil otherwise.
-	Auth(w http.ResponseWriter, r *http.Request) error
+	// Auth returns nil if the request r may open the stream for client c,
+	// an error otherwise. An *AuthError sets the HTTP status of the answer
+	// (500 for other errors).
+	Auth(r *http.Request, c *Client) error
 }
 
-var djangoServer = flag.String("dmbcau", "http://dmbcau/authenticator/", "dmbcau auth API endpoint")
+// AuthError is a refused authentication.
+type AuthError struct {
+	Status int    // HTTP status to answer
+	Reason string // logged, not sent to the client
+}
 
-// DjangoAuth authenticate against active Django sessions.
-func DjangoAuth(w http.ResponseWriter, r *http.Request) error {
+func (e *AuthError) Error() string {
+	return fmt.Sprintf("%d %s: %s", e.Status, http.StatusText(e.Status), e.Reason)
+}
+
+// DjangoAuth authenticates against active Django sessions.
+type DjangoAuth struct {
+	Endpoint string // URL of the dmbcau authenticator API
+}
+
+func (d DjangoAuth) Auth(r *http.Request, c *Client) error {
 	ip := r.Header.Get("X-Forwarded-For")
-	sessionsID, err := r.Cookie("sessionid")
+	sessionID, err := r.Cookie("sessionid")
 	if err != nil {
-		Warn("Not valid cookie for %s", ip)
-		w.WriteHeader(http.StatusUnprocessableEntity)
-		return errors.New("Not valid cookie")
+		return &AuthError{http.StatusUnprocessableEntity, "no sessionid cookie"}
 	}
 
 	params := url.Values{}
-	params.Add("sessionid", sessionsID.Value)
+	params.Add("sessionid", sessionID.Value)
 	params.Add("clientip", ip)
 
-	query := *djangoServer + "?" + params.Encode()
-	if res, err := http.Get(query); err != nil {
-		Error("Django error [%s]: %s", err, ip)
-		w.WriteHeader(http.StatusInternalServerError)
-		return errors.New("Django error")
-	} else if res.StatusCode != http.StatusOK {
-		Warn("Django not OK [%d]: %s", res.StatusCode, ip)
-		w.WriteHeader(res.StatusCode)
-		return errors.New("Django not OK")
-	} // else authenticate
-	Info("Authenticated %s", ip)
+	res, err := http.Get(d.Endpoint + "?" + params.Encode())
+	if err != nil {
+		return fmt.Errorf("django: %w", err)
+	}
+	if res.StatusCode != http.StatusOK {
+		return &AuthError{res.StatusCode, "django refused"}
+	}
 	return nil
 }
 
 // NoAuth does not enforce authentication.
-func NoAuth(w http.ResponseWriter, r *http.Request) error {
+type NoAuth struct{}
+
+func (NoAuth) Auth(r *http.Request, c *Client) error {
 	return nil
 }

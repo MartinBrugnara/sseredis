@@ -86,12 +86,13 @@ func getRequest(t *testing.T, url string) *http.Request {
 // newTestServer serves sseHandler without authentication.
 func newTestServer(t *testing.T) (*httptest.Server, *Hub) {
 	t.Helper()
-	old := authFunc
-	authFunc = NoAuth
-	t.Cleanup(func() { authFunc = old })
+	return newTestServerWithAuth(t, NoAuth{})
+}
 
+func newTestServerWithAuth(t *testing.T, auth Authenticator) (*httptest.Server, *Hub) {
+	t.Helper()
 	h, _ := newTestHub(t)
-	srv := httptest.NewServer(http.HandlerFunc(sseHandler(h)))
+	srv := httptest.NewServer(http.HandlerFunc(sseHandler(h, auth)))
 	t.Cleanup(srv.Close)
 	return srv, h
 }

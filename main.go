@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"log"
 	"net/http"
@@ -16,7 +17,7 @@ var (
 	listenAddr  = flag.String("listen", ":80", "Address to bind")
 	acao        = flag.String("origin", "*", "Access-Control-Allow-Origin")
 
-	authFunc = DjangoAuth
+	djangoServer = flag.String("dmbcau", "http://dmbcau/authenticator/", "dmbcau auth API endpoint")
 
 	// writeTimeout bounds each write to a client, so a stalled client
 	// does not keep its handler around forever.
@@ -41,12 +42,12 @@ func main() {
 	go heartbeatLoop(hub, timerTick)
 
 	// Listen for guests
-	http.HandleFunc("/", sseHandler(hub))
+	http.HandleFunc("/", sseHandler(hub, DjangoAuth{Endpoint: *djangoServer}))
 	Info("RDY, Listening @ %s", *listenAddr)
 	log.Fatal(http.ListenAndServe(*listenAddr, nil))
 }
 
-func sseHandler(hub *Hub) func(w http.ResponseWriter, r *http.Request) {
+func sseHandler(hub *Hub, auth Authenticator) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ip := r.Header.Get("X-Forwarded-For")
 		if len(ip) == 0 {
@@ -68,11 +69,19 @@ func sseHandler(hub *Hub) func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", *acao)
 		Debug("Sent Headers to %s", ip)
 
-		if err := authFunc(w, r); err != nil {
-			Debug("Authentication failed for %s", ip)
+		client := newClient(ip, r)
+		if err := auth.Auth(r, client); err != nil {
+			var authErr *AuthError
+			if errors.As(err, &authErr) {
+				Warn("Authentication failed for %s: %s", ip, err)
+				http.Error(w, http.StatusText(authErr.Status), authErr.Status)
+			} else {
+				Error("Authentication error for %s: %s", ip, err)
+				http.Error(w, "Authentication error", http.StatusInternalServerError)
+			}
 			return
 		}
-		client := newClient(ip, r)
+		Info("Authenticated %s", ip)
 		hub.Subscribe(client)
 		defer hub.Unsubscribe(client)
 
