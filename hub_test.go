@@ -1,8 +1,13 @@
 package main
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"log"
+	"os"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -11,6 +16,7 @@ import (
 type fakeSub struct {
 	mu    sync.Mutex
 	calls []string
+	err   error // returned by every call
 }
 
 func (f *fakeSub) record(op string, channels []interface{}) error {
@@ -19,7 +25,7 @@ func (f *fakeSub) record(op string, channels []interface{}) error {
 	for _, c := range channels {
 		f.calls = append(f.calls, fmt.Sprintf("%s %s", op, c))
 	}
-	return nil
+	return f.err
 }
 
 func (f *fakeSub) Subscribe(channels ...interface{}) error   { return f.record("sub", channels) }
@@ -144,5 +150,25 @@ func TestHubResubscribesOnNewSubscriber(t *testing.T) {
 	h.SetSubscriber(sub) // reconnected
 	if got, want := sub.Calls(), []string{"sub x"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("redis calls = %v, want %v", got, want)
+	}
+}
+
+func TestHubLogsSubscriberErrors(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	h := NewHub()
+	go h.Run()
+	h.SetSubscriber(&fakeSub{err: errors.New("broken pipe")})
+	c := newClientFor("c", []string{"x"})
+	h.Subscribe(c)
+	h.Unsubscribe(c)
+
+	out := buf.String()
+	for _, want := range []string{"Subscribing to x: broken pipe", "Unsubscribing from x: broken pipe"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log does not contain %q:\n%s", want, out)
+		}
 	}
 }

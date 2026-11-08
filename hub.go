@@ -57,6 +57,10 @@ func NewHub() *Hub {
 	}
 }
 
+// Errors from sub are logged: they come from a broken Redis connection,
+// which redisLoop notices too, and it calls SetSubscriber again once it has
+// reconnected.
+//
 // SetSubscriber makes the Hub subscribe through sub, starting with all the
 // channels its clients need (e.g. after reconnecting to Redis). nil means
 // Redis is not connected: subscriptions are only counted until the next
@@ -71,7 +75,9 @@ func (h *Hub) SetSubscriber(sub subscriber) {
 		for s := range h.channels {
 			channels = append(channels, s)
 		}
-		sub.Subscribe(channels...)
+		if err := sub.Subscribe(channels...); err != nil {
+			Error("Subscribing to %v: %s", channels, err)
+		}
 	})
 }
 
@@ -100,7 +106,9 @@ func (h *Hub) Subscribe(c *Client) {
 		for s := range c.subs {
 			h.channels[s]++
 			if h.channels[s] == 1 && h.sub != nil {
-				h.sub.Subscribe(s)
+				if err := h.sub.Subscribe(s); err != nil {
+					Error("Subscribing to %s: %s", s, err)
+				}
 			}
 		}
 	})
@@ -156,7 +164,9 @@ func (h *Hub) remove(c *Client) {
 		if h.channels[s] == 0 {
 			delete(h.channels, s)
 			if h.sub != nil {
-				h.sub.Unsubscribe(s)
+				if err := h.sub.Unsubscribe(s); err != nil {
+					Error("Unsubscribing from %s: %s", s, err)
+				}
 			}
 		}
 	}
