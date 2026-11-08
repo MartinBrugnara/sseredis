@@ -88,10 +88,12 @@ func redisSession(ctx context.Context, dial func() (redis.Conn, error), h *Hub) 
 	}
 }
 
-// redisDialer returns a function that connects to the Redis at addr.
+// redisDialer returns a function that connects to the Redis at addr:
+// host:port, or unix:/path/to/redis.sock.
 func redisDialer(addr string) func() (redis.Conn, error) {
+	network, address := splitNetAddr(addr)
 	return func() (redis.Conn, error) {
-		c, err := redis.Dial("tcp", addr, redis.DialConnectTimeout(5*time.Second))
+		c, err := redis.Dial(network, address, redis.DialConnectTimeout(5*time.Second))
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", addr, err)
 		}

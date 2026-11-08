@@ -4,21 +4,25 @@ import (
 	"context"
 	"errors"
 	"flag"
-	"log"
 	"net/http"
+	"os"
+	"os/signal"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 )
 
 const timerTick = time.Second * 10
 
 var (
-	redisServer = flag.String("redis", "redis:6379", "redis server address")
-	listenAddr  = flag.String("listen", ":80", "Address to bind")
+	redisServer = flag.String("redis", "redis:6379", "redis server address: host:port or unix:/path/to/redis.sock")
+	listenAddr  = flag.String("listen", ":80", "Address to bind: host:port or unix:/path/to/sock")
+	listenMode  = flag.String("listen-mode", "0660", "Permissions (octal) of the -listen unix socket; ignored for TCP")
 	acao        = flag.String("origin", "", "Origin allowed to connect cross-origin with its cookies (Access-Control-Allow-Origin); empty for same-origin only")
 
 	djangoServer = flag.String("dmbcau", "http://dmbcau/authenticator/", "dmbcau auth API endpoint")
+	djangoSocket = flag.String("dmbcau-socket", "", "Unix socket to reach the auth API through (the -dmbcau URL still gives scheme, Host and path); empty: connect to the URL's host")
 	authTimeout  = flag.Duration("auth-timeout", 5*time.Second, "Timeout of a call to the auth API")
 
 	// writeTimeout bounds each write to a client, so a stalled client
@@ -44,9 +48,26 @@ func main() {
 	go heartbeatLoop(hub, timerTick)
 
 	// Listen for guests
-	http.HandleFunc("/", sseHandler(hub, NewDjangoAuth(*djangoServer, *authTimeout)))
+	l, err := listen(*listenAddr, *listenMode)
+	if err != nil {
+		Fatal("Listen @ %s: %s", *listenAddr, err)
+	}
+	auth := NewDjangoAuth(*djangoServer, *djangoSocket, *authTimeout)
+	srv := &http.Server{Handler: http.HandlerFunc(sseHandler(hub, auth))}
+	// On SIGTERM (systemctl stop) or ^C close the server: closing the
+	// listener removes the unix socket file. Close, not Shutdown: SSE
+	// streams never become idle, so Shutdown would wait forever.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	go func() {
+		<-ctx.Done()
+		Info("Shutting down")
+		srv.Close()
+	}()
 	Info("RDY, Listening @ %s", *listenAddr)
-	log.Fatal(http.ListenAndServe(*listenAddr, nil))
+	if err := srv.Serve(l); !errors.Is(err, http.ErrServerClosed) {
+		Fatal("Serve: %s", err)
+	}
 }
 
 func sseHandler(hub *Hub, auth Authenticator) func(w http.ResponseWriter, r *http.Request) {

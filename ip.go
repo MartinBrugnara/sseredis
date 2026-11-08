@@ -14,7 +14,8 @@ import (
 // through nginx: see "Client IP" in README.md.
 //
 // Without the header (or with a malformed one) it is the address of the
-// peer that connected to us.
+// peer that connected to us, or "unix" if the peer came through a unix
+// socket (its RemoteAddr is "", "@" or a path, not host:port).
 func clientIP(r *http.Request) string {
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		first, _, _ := strings.Cut(xff, ",")
@@ -26,7 +27,7 @@ func clientIP(r *http.Request) string {
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		return "unix"
 	}
 	return host
 }

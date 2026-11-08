@@ -12,12 +12,56 @@ go build && ./sseredis -redis redis:6379 -listen :80 -dmbcau http://dmbcau/authe
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-redis` | `redis:6379` | Redis server address. |
-| `-listen` | `:80` | Address to bind. |
+| `-redis` | `redis:6379` | Redis server address: `host:port`, or `unix:/path/to/redis.sock`. |
+| `-listen` | `:80` | Address to bind: `host:port`, or `unix:/path/to/sock` (see [unix sockets](#running-with-unix-sockets-systemd)). |
+| `-listen-mode` | `0660` | Permissions (octal) of the `-listen` unix socket. Ignored for TCP. |
 | `-dmbcau` | `http://dmbcau/authenticator/` | Django authenticator API (see [Authentication](#authentication)). |
+| `-dmbcau-socket` | (empty) | Unix socket to reach the authenticator API through. The `-dmbcau` URL still gives the scheme, `Host` header and path. Empty: connect to the URL's host. |
 | `-auth-timeout` | `5s` | Timeout of a call to the authenticator API. |
 | `-origin` | (empty) | Origin allowed to open the stream cross-origin, with its cookies (e.g. `https://app.example.org`). Empty: same-origin only. `*` allows any origin but without cookies, so only without authentication. |
 | `-log` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `FATAL`. |
+
+### Running with unix sockets (systemd)
+
+On a single host every connection can go through unix sockets instead of TCP:
+
+```sh
+sseredis -listen unix:/run/sseredis/sseredis.sock -listen-mode 0666 \
+  -redis unix:/run/redis/redis-server.sock \
+  -dmbcau http://dmbcau/authenticator/ -dmbcau-socket /run/dmbcau-auth/nginx.sock
+```
+
+- `-listen unix:...`: at start sseredis removes a socket file left at that path by a run that did not shut
+  down cleanly (only if it is a socket: any other file makes it fail), listens, then sets the socket's
+  permissions to `-listen-mode`. On `SIGTERM`/`SIGINT` (`systemctl stop`) it closes the open streams and
+  removes the socket.
+- `-dmbcau-socket`: every call to the authenticator connects to that socket; here `dmbcau` is only the
+  `Host` header nginx (or Django) sees, it is never resolved.
+- `-listen-mode 0666` does not mean anyone can connect: connecting needs search permission on every
+  directory of the path too. With `/run/sseredis` owned by `sseredis:www-data` with mode `0750`, only
+  sseredis and the `www-data` group (nginx) can reach the socket. With systemd:
+
+  ```ini
+  [Service]
+  User=sseredis
+  Group=www-data
+  RuntimeDirectory=sseredis
+  RuntimeDirectoryMode=0750
+  ```
+
+  (sseredis' user must also be allowed to connect to Redis' and dmbcau's sockets, e.g. be in the `redis`
+  group.)
+
+On the nginx side:
+
+```nginx
+upstream sse {
+    server unix:/run/sseredis/sseredis.sock;
+}
+```
+
+and `proxy_pass http://sse/;` in the [location](#nginx). There is no client IP on a unix socket: sseredis
+takes it from `X-Forwarded-For` (see [Client IP](#client-ip)), so nginx must set it.
 
 Tests: `go test -race ./...` (Redis is simulated with miniredis, nothing to install).
 
@@ -81,7 +125,7 @@ The rule (`clientIP` in `ip.go`):
   client sent. Proxies after it (if any) append. So the header holds only addresses written by our
   proxies, and its **first entry is the client**.
 - sseredis takes the first entry. Without the header (or if it is not an IP) it uses the address of the peer
-  that connected to it.
+  that connected to it, or `unix` if that peer came through a unix socket.
 - Django must compute the client IP the same way, or the IP sseredis sends will not match the session's.
 
 What nginx must do:
@@ -108,5 +152,5 @@ What nginx must do:
    real_ip_recursive on;
    ```
 
-4. sseredis (and Django) must be reachable **only through nginx** (bind to the internal network, or
-   firewall it). Anyone who can connect directly can send any `X-Forwarded-For`.
+4. sseredis (and Django) must be reachable **only through nginx** (bind to the internal network, firewall
+   it, or use a unix socket only nginx can open). Anyone who can connect directly can send any `X-Forwarded-For`.

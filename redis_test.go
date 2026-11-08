@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
+	"net"
 	"reflect"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -139,5 +142,66 @@ func TestFormatEvent(t *testing.T) {
 		if got := string(formatEvent([]byte(in))); got != want {
 			t.Errorf("formatEvent(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// unixForward listens on a unix socket and forwards each connection to
+// the TCP address target, until the end of the test. miniredis only
+// listens on TCP.
+func unixForward(t *testing.T, target string) string {
+	t.Helper()
+	path := socketPath(t)
+	l, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var conns []net.Conn
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			in, err := l.Accept()
+			if err != nil {
+				return
+			}
+			out, err := net.Dial("tcp", target)
+			if err != nil {
+				in.Close()
+				continue
+			}
+			mu.Lock()
+			conns = append(conns, in, out)
+			mu.Unlock()
+			wg.Add(2)
+			go func() { defer wg.Done(); io.Copy(out, in); out.Close() }()
+			go func() { defer wg.Done(); io.Copy(in, out); in.Close() }()
+		}
+	}()
+	t.Cleanup(func() {
+		l.Close()
+		mu.Lock()
+		for _, c := range conns {
+			c.Close()
+		}
+		mu.Unlock()
+		wg.Wait()
+	})
+	return path
+}
+
+func TestRedisDialerUnix(t *testing.T) {
+	m := miniredis.RunT(t)
+	path := unixForward(t, m.Addr())
+	h := NewHub()
+	go h.Run()
+	c := newClientFor("c", []string{"x"})
+	h.Subscribe(c)
+	startRedisLoop(t, redisDialer("unix:"+path), h)
+
+	publishUntilReceived(t, m, "x", "over unix")
+	if got := receive(t, c); got != "data: over unix\n\n" {
+		t.Errorf("got %q", got)
 	}
 }

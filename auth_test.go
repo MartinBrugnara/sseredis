@@ -49,7 +49,7 @@ func newFakeDjangoFunc(t *testing.T, answer http.HandlerFunc) *fakeDjango {
 }
 
 func newTestDjangoAuth(d *fakeDjango) DjangoAuth {
-	return NewDjangoAuth(d.URL+"/authenticator/", time.Second)
+	return NewDjangoAuth(d.URL+"/authenticator/", "", time.Second)
 }
 
 func (d *fakeDjango) lastQuery(t *testing.T) url.Values {
@@ -186,7 +186,7 @@ func TestDjangoAuthTimeout(t *testing.T) {
 		<-release
 	})
 	defer close(release) // before d.Close, which waits for the handler
-	auth := NewDjangoAuth(d.URL+"/authenticator/", 100*time.Millisecond)
+	auth := NewDjangoAuth(d.URL+"/authenticator/", "", 100*time.Millisecond)
 
 	start := time.Now()
 	err := auth.Auth(authRequest("s3cr3t"), newClientFor("1.2.3.4", []string{"x"}))
@@ -252,5 +252,54 @@ func TestServerChannelsAuthorizedByDjango(t *testing.T) {
 	h.Publish("public", []byte("data: ok\n\n"))
 	if got := c.next(t); got != "ok" {
 		t.Errorf("got %q", got)
+	}
+}
+
+// With a socket, DjangoAuth connects to it whatever the URL host, which
+// still gives the Host header and the path.
+func TestDjangoAuthUnixSocket(t *testing.T) {
+	path := socketPath(t)
+	l, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var host, reqPath string
+	var query url.Values
+	d := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		host, reqPath, query = r.Host, r.URL.Path, r.URL.Query()
+		mu.Unlock()
+		if r.URL.Query().Get("sessionid") != "s3cr3t" {
+			w.WriteHeader(http.StatusForbidden)
+		}
+	}))
+	d.Listener.Close()
+	d.Listener = l
+	d.Start()
+	t.Cleanup(d.Close)
+
+	// The host does not resolve: only the socket can answer.
+	auth := NewDjangoAuth("http://dmbcau.invalid/authenticator/", path, time.Second)
+	if err := auth.Auth(authRequest("s3cr3t"), newClientFor("1.2.3.4", []string{"x"})); err != nil {
+		t.Fatalf("Auth: %s", err)
+	}
+	mu.Lock()
+	if host != "dmbcau.invalid" || reqPath != "/authenticator/" || query.Get("clientip") != "1.2.3.4" {
+		t.Errorf("got Host %q, path %q, query %v", host, reqPath, query)
+	}
+	mu.Unlock()
+
+	err = auth.Auth(authRequest("expired"), newClientFor("1.2.3.4", []string{"x"}))
+	if got := authStatus(err); got != http.StatusForbidden {
+		t.Errorf("err = %v, want status 403", err)
+	}
+}
+
+func TestDjangoAuthUnixSocketDown(t *testing.T) {
+	auth := NewDjangoAuth("http://dmbcau/authenticator/", socketPath(t), time.Second)
+	err := auth.Auth(authRequest("s3cr3t"), newClientFor("1.2.3.4", []string{"x"}))
+	if err == nil || authStatus(err) != 0 {
+		t.Errorf("err = %v, want a plain error", err)
 	}
 }

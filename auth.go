@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"time"
@@ -34,12 +36,19 @@ type DjangoAuth struct {
 }
 
 // NewDjangoAuth returns a DjangoAuth calling endpoint, giving up after
-// timeout.
-func NewDjangoAuth(endpoint string, timeout time.Duration) DjangoAuth {
+// timeout. If socket is not empty, every call connects to that unix
+// socket whatever the host of endpoint, which still gives the scheme, the
+// Host header and the path.
+func NewDjangoAuth(endpoint, socket string, timeout time.Duration) DjangoAuth {
+	var transport http.RoundTripper // nil: http.DefaultTransport
+	if socket != "" {
+		transport = unixTransport(socket)
+	}
 	return DjangoAuth{
 		Endpoint: endpoint,
 		Client: &http.Client{
-			Timeout: timeout,
+			Transport: transport,
+			Timeout:   timeout,
 			// The API answers itself; following a redirect (e.g. to a
 			// login page answering 200) could accept anybody.
 			CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -47,6 +56,20 @@ func NewDjangoAuth(endpoint string, timeout time.Duration) DjangoAuth {
 			},
 		},
 	}
+}
+
+// unixTransport returns a transport connecting to the unix socket at path
+// for every request.
+func unixTransport(path string) *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	// The socket is the server: an HTTP_PROXY from the environment must
+	// not turn the requests into proxy requests.
+	t.Proxy = nil
+	var d net.Dialer
+	t.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return d.DialContext(ctx, "unix", path)
+	}
+	return t
 }
 
 func (d DjangoAuth) Auth(r *http.Request, c *Client) error {

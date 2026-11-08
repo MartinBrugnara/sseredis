@@ -50,3 +50,22 @@ func TestServerSendsClientIPToDjango(t *testing.T) {
 		t.Errorf("clientip = %q, want 203.0.113.7", got)
 	}
 }
+
+// Behind a unix socket there is no peer IP: X-Forwarded-For or "unix".
+func TestClientIPUnixPeer(t *testing.T) {
+	for _, remote := range []string{"", "@", "/run/sseredis/sseredis.sock"} {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.RemoteAddr = remote
+		if got := clientIP(r); got != "unix" {
+			t.Errorf("RemoteAddr %q: clientIP = %q, want unix", remote, got)
+		}
+		r.Header.Set("X-Forwarded-For", "203.0.113.7, 10.0.0.2")
+		if got := clientIP(r); got != "203.0.113.7" {
+			t.Errorf("RemoteAddr %q with X-Forwarded-For: clientIP = %q", remote, got)
+		}
+		r.Header.Set("X-Forwarded-For", "garbage")
+		if got := clientIP(r); got != "unix" {
+			t.Errorf("RemoteAddr %q, bad X-Forwarded-For: clientIP = %q, want unix", remote, got)
+		}
+	}
+}
