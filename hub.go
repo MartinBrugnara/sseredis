@@ -45,17 +45,34 @@ type Hub struct {
 	ops      chan func()
 	clients  map[*Client]struct{}
 	channels map[string]int // channel -> number of clients subscribed to it
-	sub      subscriber
+	sub      subscriber     // nil while not connected to Redis
 }
 
-// NewHub returns a Hub that subscribes to Redis channels through sub.
-func NewHub(sub subscriber) *Hub {
+// NewHub returns a Hub not connected to Redis yet (see SetSubscriber).
+func NewHub() *Hub {
 	return &Hub{
 		ops:      make(chan func()),
 		clients:  make(map[*Client]struct{}),
 		channels: make(map[string]int),
-		sub:      sub,
 	}
+}
+
+// SetSubscriber makes the Hub subscribe through sub, starting with all the
+// channels its clients need (e.g. after reconnecting to Redis). nil means
+// Redis is not connected: subscriptions are only counted until the next
+// SetSubscriber.
+func (h *Hub) SetSubscriber(sub subscriber) {
+	h.do(func() {
+		h.sub = sub
+		if sub == nil || len(h.channels) == 0 {
+			return
+		}
+		channels := make([]interface{}, 0, len(h.channels))
+		for s := range h.channels {
+			channels = append(channels, s)
+		}
+		sub.Subscribe(channels...)
+	})
 }
 
 // Run executes the Hub operations. It never returns.
@@ -82,7 +99,7 @@ func (h *Hub) Subscribe(c *Client) {
 		h.clients[c] = struct{}{}
 		for s := range c.subs {
 			h.channels[s]++
-			if h.channels[s] == 1 {
+			if h.channels[s] == 1 && h.sub != nil {
 				h.sub.Subscribe(s)
 			}
 		}
@@ -138,7 +155,9 @@ func (h *Hub) remove(c *Client) {
 		h.channels[s]--
 		if h.channels[s] == 0 {
 			delete(h.channels, s)
-			h.sub.Unsubscribe(s)
+			if h.sub != nil {
+				h.sub.Unsubscribe(s)
+			}
 		}
 	}
 }

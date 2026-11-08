@@ -1,13 +1,12 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"net/http"
 	"strings"
 	"time"
-
-	"github.com/gomodule/redigo/redis"
 )
 
 const timerTick = time.Second * 10
@@ -35,17 +34,10 @@ func main() {
 	}
 	Info("Log level: %s", LOG_LV_STR[LOG_LEVEL])
 
-	// Setup Redis
-	c, err := redis.Dial("tcp", *redisServer)
-	if err != nil {
-		Fatal("Connecting to Redis. %s", err)
-	}
-	psc := &redis.PubSubConn{Conn: c}
-	Info("Connected to Redis @ %s", *redisServer)
-
-	hub := NewHub(psc)
+	hub := NewHub()
 	go hub.Run()
-	go redisLoop(psc, hub)
+	Info("Using Redis @ %s", *redisServer)
+	go redisLoop(context.Background(), redisDialer(*redisServer), hub)
 	go heartbeatLoop(hub, timerTick)
 
 	// Listen for guests

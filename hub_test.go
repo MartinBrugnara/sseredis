@@ -34,8 +34,9 @@ func (f *fakeSub) Calls() []string {
 func newTestHub(t *testing.T) (*Hub, *fakeSub) {
 	t.Helper()
 	sub := &fakeSub{}
-	h := NewHub(sub)
+	h := NewHub()
 	go h.Run()
+	h.SetSubscriber(sub)
 	return h, sub
 }
 
@@ -127,5 +128,21 @@ func TestHubDropsSlowClient(t *testing.T) {
 		if c == "unsub x" {
 			t.Error("unsubscribed from x while fast is still subscribed")
 		}
+	}
+}
+
+func TestHubResubscribesOnNewSubscriber(t *testing.T) {
+	h, _ := newTestHub(t)
+	h.SetSubscriber(nil) // Redis went away
+	a := newClientFor("a", []string{"x"})
+	b := newClientFor("b", []string{"y"})
+	h.Subscribe(a) // only counted
+	h.Subscribe(b)
+	h.Unsubscribe(b)
+
+	sub := &fakeSub{}
+	h.SetSubscriber(sub) // reconnected
+	if got, want := sub.Calls(), []string{"sub x"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("redis calls = %v, want %v", got, want)
 	}
 }
