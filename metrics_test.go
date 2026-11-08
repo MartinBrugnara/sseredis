@@ -161,6 +161,8 @@ func TestServerConnectionMetrics(t *testing.T) {
 		{NoAuth{}, "/", "no_channels", ""},
 		{refuseAll{http.StatusForbidden}, "/?subscribe=x", "refused", "refused"},
 		{failAll{}, "/?subscribe=x", "auth_error", "error"},
+		// Django answered 5xx: an error, not a refusal.
+		{refuseAll{http.StatusBadGateway}, "/?subscribe=x", "auth_error", "error"},
 	} {
 		srv, _ := newTestServerWithAuth(t, tc.auth)
 		before := value(connectionsTotal.WithLabelValues(tc.result))

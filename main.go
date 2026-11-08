@@ -113,11 +113,14 @@ func sseHandler(hub *Hub, auth Authenticator) func(w http.ResponseWriter, r *htt
 		client := newClientFor(ip, channels)
 		authStart := time.Now()
 		err := auth.Auth(r, client)
+		// A 5xx AuthError (e.g. Django answered 500) is the authenticator
+		// failing, not refusing: count and log it as an error.
 		var authErr *AuthError
+		isAuthErr := errors.As(err, &authErr)
 		switch {
 		case err == nil:
 			authDuration.WithLabelValues("ok").Observe(time.Since(authStart).Seconds())
-		case errors.As(err, &authErr):
+		case isAuthErr && authErr.Status < 500:
 			authDuration.WithLabelValues("refused").Observe(time.Since(authStart).Seconds())
 			connectionsTotal.WithLabelValues("refused").Inc()
 			Warn("Authentication failed for %s: %s", ip, err)
@@ -127,7 +130,11 @@ func sseHandler(hub *Hub, auth Authenticator) func(w http.ResponseWriter, r *htt
 			authDuration.WithLabelValues("error").Observe(time.Since(authStart).Seconds())
 			connectionsTotal.WithLabelValues("auth_error").Inc()
 			Error("Authentication error for %s: %s", ip, err)
-			http.Error(w, "Authentication error", http.StatusInternalServerError)
+			if isAuthErr {
+				http.Error(w, http.StatusText(authErr.Status), authErr.Status)
+			} else {
+				http.Error(w, "Authentication error", http.StatusInternalServerError)
+			}
 			return
 		}
 		Info("Authenticated %s", ip)
