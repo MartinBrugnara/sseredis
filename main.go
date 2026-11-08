@@ -30,7 +30,21 @@ var (
 	// writeTimeout bounds each write to a client, so a stalled client
 	// does not keep its handler around forever.
 	writeTimeout = 30 * time.Second
+
+	// readHeaderTimeout bounds reading a request's headers, idleTimeout how
+	// long a kept-alive connection may wait for its next request (longer
+	// than nginx's upstream keepalive_timeout, 60s by default, so nginx
+	// closes first). Without them idle or slow connections pile up, each
+	// holding a goroutine and a file descriptor. There is no ReadTimeout or
+	// WriteTimeout: they would cut the streams (see writeTimeout instead).
+	readHeaderTimeout = 10 * time.Second
+	idleTimeout       = 120 * time.Second
 )
+
+// newServer returns an HTTP server for h with the timeouts above.
+func newServer(h http.Handler) *http.Server {
+	return &http.Server{Handler: h, ReadHeaderTimeout: readHeaderTimeout, IdleTimeout: idleTimeout}
+}
 
 func main() {
 	// Setup logging
@@ -55,14 +69,14 @@ func main() {
 		Fatal("Listen @ %s: %s", *listenAddr, err)
 	}
 	auth := NewDjangoAuth(*djangoServer, *djangoSocket, *authTimeout)
-	srv := &http.Server{Handler: http.HandlerFunc(sseHandler(hub, auth))}
+	srv := newServer(http.HandlerFunc(sseHandler(hub, auth)))
 	var metricsSrv *http.Server
 	if *metricsAddr != "" {
 		ml, err := listen(*metricsAddr, *metricsMode)
 		if err != nil {
 			Fatal("Listen for metrics @ %s: %s", *metricsAddr, err)
 		}
-		metricsSrv = &http.Server{Handler: metricsHandler(), ReadHeaderTimeout: 10 * time.Second}
+		metricsSrv = newServer(metricsHandler())
 		go func() {
 			if err := metricsSrv.Serve(ml); !errors.Is(err, http.ErrServerClosed) {
 				Fatal("Serve metrics: %s", err)

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -282,5 +283,64 @@ func TestSetCORSHeaders(t *testing.T) {
 		if got := h.Get("Access-Control-Allow-Credentials"); got != tc.credentials {
 			t.Errorf("%q: Allow-Credentials = %q, want %q", tc.origin, got, tc.credentials)
 		}
+	}
+}
+
+// newTimeoutServer serves sseHandler through newServer, with timeouts of d.
+func newTimeoutServer(t *testing.T, d time.Duration) (*httptest.Server, *Hub) {
+	t.Helper()
+	oldHeader, oldIdle := readHeaderTimeout, idleTimeout
+	readHeaderTimeout, idleTimeout = d, d
+	t.Cleanup(func() { readHeaderTimeout, idleTimeout = oldHeader, oldIdle })
+	h, _ := newTestHub(t)
+	srv := httptest.NewUnstartedServer(nil)
+	srv.Config = newServer(http.HandlerFunc(sseHandler(h, NoAuth{})))
+	srv.Start()
+	t.Cleanup(srv.Close)
+	return srv, h
+}
+
+// waitClosed fails the test if the server does not close conn in time.
+func waitClosed(t *testing.T, conn net.Conn) {
+	t.Helper()
+	conn.SetReadDeadline(time.Now().Add(testTimeout))
+	if _, err := io.Copy(io.Discard, conn); err != nil {
+		t.Fatalf("connection not closed by the server: %s", err)
+	}
+}
+
+func TestServerClosesIdleConnections(t *testing.T) {
+	srv, _ := newTimeoutServer(t, 50*time.Millisecond)
+	conn, err := net.Dial("tcp", srv.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	// A complete request (400, no channels), then nothing: the kept-alive
+	// connection must be closed after idleTimeout.
+	fmt.Fprintf(conn, "GET / HTTP/1.1\r\nHost: test\r\n\r\n")
+	waitClosed(t, conn)
+}
+
+func TestServerClosesSlowHeaders(t *testing.T) {
+	srv, _ := newTimeoutServer(t, 50*time.Millisecond)
+	conn, err := net.Dial("tcp", srv.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	fmt.Fprintf(conn, "GET /?subscribe=x HTTP/1.1\r\nHost: test\r\n") // headers never end
+	waitClosed(t, conn)
+}
+
+// The timeouts must not cut a stream that waits long for its next message.
+func TestServerTimeoutsDoNotCutStreams(t *testing.T) {
+	srv, h := newTimeoutServer(t, 50*time.Millisecond)
+	c := connect(t, getRequest(t, srv.URL+"/?subscribe=x"))
+	waitClients(t, h, 1)
+	time.Sleep(300 * time.Millisecond)
+	h.Publish("x", []byte("data: still here\n\n"))
+	if got := c.next(t); got != "still here" {
+		t.Errorf("got %q", got)
 	}
 }

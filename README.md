@@ -76,6 +76,9 @@ A client opens `GET /?subscribe=chan1,chan2`. After [authentication](#authentica
   when its first client arrives and unsubscribes when the last one leaves.
 - It never waits for a client: each client has a queue of 64 messages, and a client whose queue is full
   (stalled or gone) is dropped. Its browser `EventSource` reconnects by itself.
+- Each write to a client must finish within 30s. A connection is closed if it takes more than 10s to send
+  its request headers, or waits more than 120s for its next request (longer than nginx's default upstream
+  `keepalive_timeout` of 60s, so nginx closes first). Open streams are not affected.
 - If the Redis connection fails, `redisLoop` (`redis.go`) reconnects with exponential backoff (1s, 2s, ... up
   to 30s) and subscribes again to all the channels in use. Messages published meanwhile are lost.
 
