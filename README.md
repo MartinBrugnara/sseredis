@@ -121,9 +121,9 @@ own, so they are never reachable through the public `-listen` address. The repos
 
 - `grafana/sseredis.json`: a Grafana dashboard (Dashboards > New > Import, then pick the Prometheus data
   source). Its `job` and `instance` variables select the targets.
-- `prometheus/alerts.yml`: alerting rules, with unit tests in `prometheus/alerts_test.yml`
-  (`promtool check rules prometheus/alerts.yml && promtool test rules prometheus/alerts_test.yml`). They
-  expect the scrape job to be called `sseredis`.
+- `grafana/alerts.yaml`: Grafana alert rules (file provisioning: `/etc/grafana/provisioning/alerting/`). Set
+  the uid of your Prometheus data source (`__PROMETHEUS_UID__`) and, if your scrape job isn't called
+  `sseredis`, its name; the commands are at the top of the file.
 
 ![The sseredis dashboard with simulated traffic](grafana/sseredis.png)
 
@@ -185,7 +185,7 @@ On the Prometheus side:
 
 ```yaml
 scrape_configs:
-  - job_name: sseredis   # the alert rules expect this name
+  - job_name: sseredis   # the alert rules expect this name (or change it in them)
     scheme: https
     metrics_path: /sseredis/metrics
     static_configs:
