@@ -217,3 +217,20 @@ func TestServerRejectsNoChannels(t *testing.T) {
 		t.Errorf("clientCount = %d, want 0", n)
 	}
 }
+
+// A multi-line payload reaches the client intact, as one event.
+func TestServerMultiLinePayload(t *testing.T) {
+	srv, h := newTestServer(t)
+	c := connect(t, getRequest(t, srv.URL+"/?subscribe=x"))
+	waitClients(t, h, 1)
+
+	payload := "line1\n\nevent: evil\nline4"
+	h.Publish("x", formatEvent([]byte(payload)))
+	h.Publish("x", formatEvent([]byte("next")))
+	if got := c.next(t); got != payload {
+		t.Errorf("got %q, want %q", got, payload)
+	}
+	if got := c.next(t); got != "next" {
+		t.Errorf("got %q, want next", got)
+	}
+}

@@ -127,3 +127,17 @@ func TestRedisLoopRetriesUntilRedisIsUp(t *testing.T) {
 		t.Errorf("dialled %d times, want 4", n)
 	}
 }
+
+func TestFormatEvent(t *testing.T) {
+	for in, want := range map[string]string{
+		"":                  "data: \n\n",
+		`{"a": 1}`:          "data: {\"a\": 1}\n\n",
+		"two\nlines":        "data: two\ndata: lines\n\n",
+		"x\n\nevent: evil":  "data: x\ndata: \ndata: event: evil\n\n",
+		"cr\rcrlf\r\nend\n": "data: cr\ndata: crlf\ndata: end\ndata: \n\n",
+	} {
+		if got := string(formatEvent([]byte(in))); got != want {
+			t.Errorf("formatEvent(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

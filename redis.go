@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"time"
@@ -75,7 +76,7 @@ func redisSession(ctx context.Context, dial func() (redis.Conn, error), h *Hub) 
 		switch v := psc.Receive().(type) {
 		case redis.Message:
 			Debug("Message [%s] %s", v.Channel, v.Data)
-			h.Publish(v.Channel, []byte(fmt.Sprintf("data: %s\n\n", v.Data)))
+			h.Publish(v.Channel, formatEvent(v.Data))
 		case redis.Subscription:
 			Debug("[%s] %s -> #%d", v.Channel, v.Kind, v.Count)
 		case error:
@@ -96,4 +97,21 @@ func redisDialer(addr string) func() (redis.Conn, error) {
 		}
 		return c, nil
 	}
+}
+
+// formatEvent returns the SSE event carrying data. Each line of data gets
+// its own "data:" field (the browser joins them back with "\n"), so a
+// payload cannot end the event early or inject other fields (event:, id:,
+// retry:). CR, LF and CRLF all end a line in SSE.
+func formatEvent(data []byte) []byte {
+	data = bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
+	data = bytes.ReplaceAll(data, []byte("\r"), []byte("\n"))
+	var b bytes.Buffer
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		b.WriteString("data: ")
+		b.Write(line)
+		b.WriteByte('\n')
+	}
+	b.WriteByte('\n')
+	return b.Bytes()
 }
