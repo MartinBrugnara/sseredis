@@ -84,8 +84,12 @@ func TestDjangoAuthAccepts(t *testing.T) {
 	if err := auth.Auth(authRequest("s3cr3t"), newClientFor("1.2.3.4", []string{"x"})); err != nil {
 		t.Fatalf("Auth: %s", err)
 	}
-	if got := d.lastQuery(t).Get("sessionid"); got != "s3cr3t" {
+	q := d.lastQuery(t)
+	if got := q.Get("sessionid"); got != "s3cr3t" {
 		t.Errorf("sessionid = %q", got)
+	}
+	if got := q.Get("clientip"); got != "1.2.3.4" {
+		t.Errorf("clientip = %q", got)
 	}
 }
 

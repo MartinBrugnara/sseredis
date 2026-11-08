@@ -50,10 +50,7 @@ func main() {
 
 func sseHandler(hub *Hub, auth Authenticator) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ip := r.Header.Get("X-Forwarded-For")
-		if len(ip) == 0 {
-			ip = r.RemoteAddr
-		}
+		ip := clientIP(r)
 		Info("Got connection: %s", ip)
 
 		if _, ok := w.(http.Flusher); !ok {

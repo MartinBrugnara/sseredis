@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -24,6 +25,10 @@ type sseClient struct {
 func connect(t *testing.T, req *http.Request) *sseClient {
 	t.Helper()
 	c := &sseClient{lines: make(chan string, 1024), err: make(chan error, 1)}
+	// Hang up at the end of the test, even if no response arrived yet.
+	ctx, cancel := context.WithCancel(req.Context())
+	t.Cleanup(cancel)
+	req = req.WithContext(ctx)
 	respCh := make(chan *http.Response, 1)
 	go func() {
 		resp, err := http.DefaultClient.Do(req)

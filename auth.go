@@ -49,7 +49,6 @@ func NewDjangoAuth(endpoint string, timeout time.Duration) DjangoAuth {
 }
 
 func (d DjangoAuth) Auth(r *http.Request, c *Client) error {
-	ip := r.Header.Get("X-Forwarded-For")
 	sessionID, err := r.Cookie("sessionid")
 	if err != nil {
 		return &AuthError{http.StatusUnprocessableEntity, "no sessionid cookie"}
@@ -57,7 +56,7 @@ func (d DjangoAuth) Auth(r *http.Request, c *Client) error {
 
 	params := url.Values{}
 	params.Add("sessionid", sessionID.Value)
-	params.Add("clientip", ip)
+	params.Add("clientip", c.ip)
 
 	req, err := http.NewRequestWithContext(r.Context(), "GET", d.Endpoint+"?"+params.Encode(), nil)
 	if err != nil {
