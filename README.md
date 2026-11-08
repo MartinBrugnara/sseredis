@@ -167,7 +167,7 @@ server in:
 
 ```nginx
 # sseredis -metrics 127.0.0.1:9090 (or unix:/run/sseredis/metrics.sock)
-location = /sseredis/metrics {
+location = /metrics/sseredis {
     allow 203.0.113.10;   # the Prometheus server
     deny all;
     proxy_pass http://127.0.0.1:9090/metrics;   # or http://unix:/run/sseredis/metrics.sock:/metrics
@@ -187,7 +187,7 @@ On the Prometheus side:
 scrape_configs:
   - job_name: sseredis   # the alert rules expect this name (or change it in them)
     scheme: https
-    metrics_path: /sseredis/metrics
+    metrics_path: /metrics/sseredis
     static_configs:
       - targets: ["dmbcau.example.org"]
 ```
