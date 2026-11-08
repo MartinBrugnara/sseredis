@@ -3,8 +3,8 @@ package main
 import (
 	"errors"
 	"flag"
-	"fmt"
 	"net/http"
+	"net/url"
 )
 
 // Authenticator authorize a subscribe request.
@@ -25,7 +25,11 @@ func DjangoAuth(w http.ResponseWriter, r *http.Request) error {
 		return errors.New("Not valid cookie")
 	}
 
-	query := fmt.Sprintf("%s?sessionid=%s", *djangoServer, sessionsID.Value)
+	params := url.Values{}
+	params.Add("sessionid", sessionsID.Value)
+	params.Add("clientip", ip)
+
+	query := *djangoServer + "?" + params.Encode()
 	if res, err := http.Get(query); err != nil {
 		Error("Django error [%s]: %s", err, ip)
 		w.WriteHeader(http.StatusInternalServerError)
