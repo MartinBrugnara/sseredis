@@ -60,9 +60,13 @@ func redisLoop(ctx context.Context, dial func() (redis.Conn, error), h *Hub) {
 func redisSession(ctx context.Context, dial func() (redis.Conn, error), h *Hub) error {
 	conn, err := dial()
 	if err != nil {
+		redisConnectsTotal.WithLabelValues("error").Inc()
 		return fmt.Errorf("connecting: %w", err)
 	}
 	defer conn.Close()
+	redisConnectsTotal.WithLabelValues("ok").Inc()
+	redisConnected.Set(1)
+	defer redisConnected.Set(0)
 	// Unblock Receive when ctx is done.
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
@@ -76,10 +80,12 @@ func redisSession(ctx context.Context, dial func() (redis.Conn, error), h *Hub) 
 		switch v := psc.Receive().(type) {
 		case redis.Message:
 			Debug("Message [%s] %s", v.Channel, v.Data)
+			redisMessagesTotal.WithLabelValues(v.Channel).Inc()
 			h.Publish(v.Channel, formatEvent(v.Data))
 		case redis.Subscription:
 			Debug("[%s] %s -> #%d", v.Channel, v.Kind, v.Count)
 		case error:
+			redisErrorsTotal.Inc()
 			if conn.Err() != nil {
 				return v
 			}

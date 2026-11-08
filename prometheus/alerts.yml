@@ -1,0 +1,83 @@
+# Prometheus alerting rules for sseredis (see "Monitoring" in README.md).
+#
+# They assume the scrape job is called "sseredis". Load them from
+# prometheus.yml:
+#
+#   rule_files:
+#     - /etc/prometheus/rules/sseredis.yml
+#
+# Check with: promtool check rules prometheus/alerts.yml
+
+groups:
+  - name: sseredis
+    rules:
+      - alert: SseredisDown
+        expr: up{job="sseredis"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "sseredis {{ $labels.instance }} cannot be scraped"
+          description: >-
+            Prometheus has not reached the sseredis metrics for 2 minutes: sseredis is down, or nginx
+            (or its allow rule) blocks the scrape. Live updates are probably down.
+
+      - alert: SseredisRedisDisconnected
+        expr: sseredis_redis_connected{job="sseredis"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "sseredis {{ $labels.instance }} is not connected to Redis"
+          description: >-
+            sseredis has been disconnected from Redis for over a minute: no live update is delivered.
+            It keeps reconnecting (backoff up to 30s); check that Redis is running and reachable.
+
+      - alert: SseredisRedisFlapping
+        expr: increase(sseredis_redis_connects_total{job="sseredis", result="ok"}[15m]) > 3
+        labels:
+          severity: warning
+        annotations:
+          summary: "sseredis {{ $labels.instance }} keeps reconnecting to Redis"
+          description: >-
+            {{ $value | printf "%.0f" }} Redis connections in 15 minutes. Messages published while
+            disconnected are lost.
+
+      - alert: SseredisAuthErrors
+        expr: |
+          sum by (instance) (rate(sseredis_connections_total{job="sseredis", result="auth_error"}[5m]))
+            /
+          sum by (instance) (rate(sseredis_connections_total{job="sseredis", result=~"ok|refused|auth_error"}[5m]))
+            > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "sseredis {{ $labels.instance }}: {{ $value | humanizePercentage }} of authentications fail"
+          description: >-
+            The Django authenticator API is down, times out or answers 5xx, so users cannot open live
+            updates. (Refused sessions are not counted.)
+
+      - alert: SseredisAuthSlow
+        expr: |
+          histogram_quantile(0.95,
+            sum by (instance, le) (rate(sseredis_auth_duration_seconds_bucket{job="sseredis"}[5m]))
+          ) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "sseredis {{ $labels.instance }}: authentication p95 is {{ $value | humanizeDuration }}"
+          description: >-
+            The Django authenticator API is slow; at -auth-timeout (5s by default) connections fail.
+
+      - alert: SseredisDroppingClients
+        expr: increase(sseredis_clients_dropped_total{job="sseredis"}[15m]) > 10
+        labels:
+          severity: warning
+        annotations:
+          summary: "sseredis {{ $labels.instance }} dropped {{ $value | printf \"%.0f\" }} slow clients in 15 minutes"
+          description: >-
+            Clients do not read their stream fast enough (their queue of 64 messages filled up). A few
+            are normal (bad mobile networks); many point to a proxy buffering the stream, or to bursts
+            of messages too large for the clients.

@@ -83,6 +83,7 @@ func (h *Hub) SetSubscriber(sub subscriber) {
 			channels = append(channels, s)
 		}
 		if err := sub.Subscribe(channels...); err != nil {
+			redisErrorsTotal.Inc()
 			Error("Subscribing to %v: %s", channels, err)
 		}
 	})
@@ -110,14 +111,18 @@ func (h *Hub) do(op func()) {
 func (h *Hub) Subscribe(c *Client) {
 	h.do(func() {
 		h.clients[c] = struct{}{}
+		clientsConnected.Inc()
 		for s := range c.subs {
 			h.channels[s]++
+			channelClients.WithLabelValues(s).Set(float64(h.channels[s]))
 			if h.channels[s] == 1 && h.sub != nil {
 				if err := h.sub.Subscribe(s); err != nil {
+					redisErrorsTotal.Inc()
 					Error("Subscribing to %s: %s", s, err)
 				}
 			}
 		}
+		redisChannels.Set(float64(len(h.channels)))
 	})
 }
 
@@ -129,10 +134,16 @@ func (h *Hub) Unsubscribe(c *Client) {
 // Publish sends msg to the clients subscribed to channel.
 func (h *Hub) Publish(channel string, msg []byte) {
 	h.do(func() {
+		var sent int
 		for c := range h.clients {
-			if c.subs[channel] {
-				h.send(c, msg)
+			if c.subs[channel] && h.send(c, msg) {
+				sent++
 			}
+		}
+		if sent == 0 {
+			messagesUnroutedTotal.WithLabelValues(channel).Inc()
+		} else {
+			messagesSentTotal.WithLabelValues(channel).Add(float64(sent))
 		}
 	})
 }
@@ -142,19 +153,24 @@ func (h *Hub) Publish(channel string, msg []byte) {
 func (h *Hub) Heartbeat() {
 	h.do(func() {
 		for c := range h.clients {
-			h.send(c, []byte(heartbeat))
+			if h.send(c, []byte(heartbeat)) {
+				heartbeatsSentTotal.Inc()
+			}
 		}
 	})
 }
 
 // send queues msg for c without blocking. If c's queue is full the client
-// is not keeping up (or its handler is gone): drop it.
-func (h *Hub) send(c *Client, msg []byte) {
+// is not keeping up (or its handler is gone): drop it and return false.
+func (h *Hub) send(c *Client, msg []byte) bool {
 	select {
 	case c.out <- msg:
+		return true
 	default:
 		Warn("Dropping slow client %s", c.ip)
+		clientsDroppedTotal.Inc()
 		h.remove(c)
+		return false
 	}
 }
 
@@ -166,17 +182,24 @@ func (h *Hub) remove(c *Client) {
 	}
 	delete(h.clients, c)
 	close(c.out)
+	clientsConnected.Dec()
 	for s := range c.subs {
 		h.channels[s]--
-		if h.channels[s] == 0 {
-			delete(h.channels, s)
-			if h.sub != nil {
-				if err := h.sub.Unsubscribe(s); err != nil {
-					Error("Unsubscribing from %s: %s", s, err)
-				}
+		// Kept at 0 rather than deleted: there are few channels, and a
+		// graph at 0 reads better than a gap.
+		channelClients.WithLabelValues(s).Set(float64(h.channels[s]))
+		if h.channels[s] > 0 {
+			continue
+		}
+		delete(h.channels, s)
+		if h.sub != nil {
+			if err := h.sub.Unsubscribe(s); err != nil {
+				redisErrorsTotal.Inc()
+				Error("Unsubscribing from %s: %s", s, err)
 			}
 		}
 	}
+	redisChannels.Set(float64(len(h.channels)))
 }
 
 // clientCount returns the number of connected clients (used by tests).

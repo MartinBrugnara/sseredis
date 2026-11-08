@@ -19,6 +19,8 @@ var (
 	redisServer = flag.String("redis", "redis:6379", "redis server address: host:port or unix:/path/to/redis.sock")
 	listenAddr  = flag.String("listen", ":80", "Address to bind: host:port or unix:/path/to/sock")
 	listenMode  = flag.String("listen-mode", "0660", "Permissions (octal) of the -listen unix socket; ignored for TCP")
+	metricsAddr = flag.String("metrics", "", "Address to serve Prometheus metrics on, at /metrics: host:port or unix:/path/to/sock; empty: no metrics. Keep it off the public -listen address")
+	metricsMode = flag.String("metrics-mode", "0660", "Permissions (octal) of the -metrics unix socket; ignored for TCP")
 	acao        = flag.String("origin", "", "Origin allowed to connect cross-origin with its cookies (Access-Control-Allow-Origin); empty for same-origin only")
 
 	djangoServer = flag.String("dmbcau", "http://dmbcau/authenticator/", "dmbcau auth API endpoint")
@@ -54,14 +56,31 @@ func main() {
 	}
 	auth := NewDjangoAuth(*djangoServer, *djangoSocket, *authTimeout)
 	srv := &http.Server{Handler: http.HandlerFunc(sseHandler(hub, auth))}
-	// On SIGTERM (systemctl stop) or ^C close the server: closing the
-	// listener removes the unix socket file. Close, not Shutdown: SSE
+	var metricsSrv *http.Server
+	if *metricsAddr != "" {
+		ml, err := listen(*metricsAddr, *metricsMode)
+		if err != nil {
+			Fatal("Listen for metrics @ %s: %s", *metricsAddr, err)
+		}
+		metricsSrv = &http.Server{Handler: metricsHandler(), ReadHeaderTimeout: 10 * time.Second}
+		go func() {
+			if err := metricsSrv.Serve(ml); !errors.Is(err, http.ErrServerClosed) {
+				Fatal("Serve metrics: %s", err)
+			}
+		}()
+		Info("Metrics @ %s/metrics", *metricsAddr)
+	}
+	// On SIGTERM (systemctl stop) or ^C close the servers: closing the
+	// listeners removes the unix socket files. Close, not Shutdown: SSE
 	// streams never become idle, so Shutdown would wait forever.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go func() {
 		<-ctx.Done()
 		Info("Shutting down")
+		if metricsSrv != nil {
+			metricsSrv.Close()
+		}
 		srv.Close()
 	}()
 	Info("RDY, Listening @ %s", *listenAddr)
@@ -77,6 +96,7 @@ func sseHandler(hub *Hub, auth Authenticator) func(w http.ResponseWriter, r *htt
 
 		if _, ok := w.(http.Flusher); !ok {
 			Warn("Streaming unsupported: %s", ip)
+			connectionsTotal.WithLabelValues("streaming_unsupported").Inc()
 			http.Error(w, "Streaming unsupported!", http.StatusInternalServerError)
 			return
 		}
@@ -85,25 +105,43 @@ func sseHandler(hub *Hub, auth Authenticator) func(w http.ResponseWriter, r *htt
 		channels := requestedChannels(r)
 		if len(channels) == 0 {
 			Info("No channels requested by %s", ip)
+			connectionsTotal.WithLabelValues("no_channels").Inc()
 			http.Error(w, "No channels: use ?subscribe=chan1,chan2", http.StatusBadRequest)
 			return
 		}
 		Info("Subscribe %s @ %s", ip, channels)
 		client := newClientFor(ip, channels)
-		if err := auth.Auth(r, client); err != nil {
-			var authErr *AuthError
-			if errors.As(err, &authErr) {
-				Warn("Authentication failed for %s: %s", ip, err)
-				http.Error(w, http.StatusText(authErr.Status), authErr.Status)
-			} else {
-				Error("Authentication error for %s: %s", ip, err)
-				http.Error(w, "Authentication error", http.StatusInternalServerError)
-			}
+		authStart := time.Now()
+		err := auth.Auth(r, client)
+		var authErr *AuthError
+		switch {
+		case err == nil:
+			authDuration.WithLabelValues("ok").Observe(time.Since(authStart).Seconds())
+		case errors.As(err, &authErr):
+			authDuration.WithLabelValues("refused").Observe(time.Since(authStart).Seconds())
+			connectionsTotal.WithLabelValues("refused").Inc()
+			Warn("Authentication failed for %s: %s", ip, err)
+			http.Error(w, http.StatusText(authErr.Status), authErr.Status)
+			return
+		default:
+			authDuration.WithLabelValues("error").Observe(time.Since(authStart).Seconds())
+			connectionsTotal.WithLabelValues("auth_error").Inc()
+			Error("Authentication error for %s: %s", ip, err)
+			http.Error(w, "Authentication error", http.StatusInternalServerError)
 			return
 		}
 		Info("Authenticated %s", ip)
+		connectionsTotal.WithLabelValues("ok").Inc()
 		hub.Subscribe(client)
 		defer hub.Unsubscribe(client)
+
+		// Counted once the stream is open; reason is set by each way out.
+		start := time.Now()
+		reason := "client_gone"
+		defer func() {
+			connectionDuration.Observe(time.Since(start).Seconds())
+			disconnectionsTotal.WithLabelValues(reason).Inc()
+		}()
 
 		// Send the headers now: the browser's EventSource only fires
 		// "open" once it has them, and the first message may be far away.
@@ -115,6 +153,7 @@ func sseHandler(hub *Hub, auth Authenticator) func(w http.ResponseWriter, r *htt
 		w.WriteHeader(http.StatusOK)
 		rc := http.NewResponseController(w)
 		if err := rc.Flush(); err != nil {
+			reason = "write_error"
 			Info("Disconnected %s: %s", ip, err)
 			return
 		}
@@ -126,6 +165,7 @@ func sseHandler(hub *Hub, auth Authenticator) func(w http.ResponseWriter, r *htt
 				return
 			case msg, ok := <-client.out:
 				if !ok {
+					reason = "dropped"
 					Info("Disconnected %s: dropped by the hub", ip)
 					return
 				}
@@ -133,11 +173,13 @@ func sseHandler(hub *Hub, auth Authenticator) func(w http.ResponseWriter, r *htt
 				if err := rc.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
 					Debug("Cannot set write deadline for %s: %s", ip, err)
 				}
-				if _, err := w.Write(msg); err != nil {
-					Info("Disconnected %s: %s", ip, err)
-					return
+				n, err := w.Write(msg)
+				bytesSentTotal.Add(float64(n))
+				if err == nil {
+					err = rc.Flush()
 				}
-				if err := rc.Flush(); err != nil {
+				if err != nil {
+					reason = "write_error"
 					Info("Disconnected %s: %s", ip, err)
 					return
 				}

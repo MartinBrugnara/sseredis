@@ -19,6 +19,8 @@ go build && ./sseredis -redis redis:6379 -listen :80 -dmbcau http://dmbcau/authe
 | `-dmbcau-socket` | (empty) | Unix socket to reach the authenticator API through. The `-dmbcau` URL still gives the scheme, `Host` header and path. Empty: connect to the URL's host. |
 | `-auth-timeout` | `5s` | Timeout of a call to the authenticator API. |
 | `-origin` | (empty) | Origin allowed to open the stream cross-origin, with its cookies (e.g. `https://app.example.org`). Empty: same-origin only. `*` allows any origin but without cookies, so only without authentication. |
+| `-metrics` | (empty) | Address to serve [Prometheus metrics](#monitoring) on, at `/metrics`: `host:port`, or `unix:/path/to/sock`. Empty: no metrics. Never the `-listen` address. |
+| `-metrics-mode` | `0660` | Permissions (octal) of the `-metrics` unix socket. Ignored for TCP. |
 | `-log` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `FATAL`. |
 
 ### Running with unix sockets (systemd)
@@ -107,6 +109,77 @@ location /sse/ {
     proxy_buffering off;      # sseredis also sends "X-Accel-Buffering: no"
     proxy_read_timeout 60s;   # the default; heartbeats every 10s keep the stream alive
 }
+```
+
+## Monitoring
+
+With `-metrics` sseredis serves [Prometheus](https://prometheus.io/) metrics at `/metrics` on a listener of its
+own, so they are never reachable through the public `-listen` address. The repository also has:
+
+- `grafana/sseredis.json`: a Grafana dashboard (Dashboards > New > Import, then pick the Prometheus data
+  source). Its `job` and `instance` variables select the targets.
+- `prometheus/alerts.yml`: alerting rules, with unit tests in `prometheus/alerts_test.yml`
+  (`promtool check rules prometheus/alerts.yml && promtool test rules prometheus/alerts_test.yml`). They
+  expect the scrape job to be called `sseredis`.
+
+### Metrics
+
+| Metric | Type | Meaning |
+|--------|------|---------|
+| `sseredis_clients_connected` | gauge | SSE streams open now. |
+| `sseredis_channel_clients{channel}` | gauge | Streams open now, by channel (a stream counts in each of its channels). |
+| `sseredis_connections_total{result}` | counter | Connection attempts: `ok`, `no_channels`, `refused` (the authenticator answered 4xx, e.g. an expired session), `auth_error` (it is down, timed out or answered 5xx), `streaming_unsupported`. |
+| `sseredis_disconnections_total{reason}` | counter | Streams closed, by how the handler noticed: `client_gone` (client or server hung up), `write_error` (includes the 30s write timeout), `dropped` (the hub had already dropped it). |
+| `sseredis_clients_dropped_total` | counter | Clients the hub dropped because their queue was full. The handler of such a client is usually stuck in a write, so it mostly shows up as a `write_error` disconnection 30s later: use this counter for drops. |
+| `sseredis_connection_duration_seconds` | histogram | How long streams stayed open (observed when they close). |
+| `sseredis_auth_duration_seconds{result}` | histogram | Time to authenticate a connection: `ok`, `refused`, `error`. |
+| `sseredis_redis_connected` | gauge | 1 while connected to Redis. |
+| `sseredis_redis_connects_total{result}` | counter | Attempts to connect to Redis: `ok`, `error`. |
+| `sseredis_redis_errors_total` | counter | Errors on the Redis connection (including the ones that close it) and failed (un)subscribes. |
+| `sseredis_redis_channels_subscribed` | gauge | Redis channels at least one client listens to. |
+| `sseredis_redis_messages_received_total{channel}` | counter | Messages received from Redis. |
+| `sseredis_messages_sent_total{channel}` | counter | Messages queued to clients, one per client. |
+| `sseredis_messages_unrouted_total{channel}` | counter | Messages no client was subscribed to. A few are normal (the last client left meanwhile). |
+| `sseredis_heartbeats_sent_total` | counter | Heartbeats queued to clients, one per client. |
+| `sseredis_bytes_sent_total` | counter | Bytes written to the streams (body only, heartbeats included). |
+
+Plus the Go runtime (`go_*`, including `go_build_info`) and, on Linux, macOS and Windows only, the process
+metrics (`process_*`: CPU, memory, file descriptors). `client_golang` has no process collector for FreeBSD.
+
+The `channel` label takes only channels Django authorized, assumed to be a handful of names: if channels ever
+become per object (`reservation-1234`), drop the label, or the number of series grows without bound. The client
+IP is never a label (personal data, unbounded).
+
+### Scraping through nginx
+
+When Prometheus runs on another server it scrapes through the public nginx, which lets only the Prometheus
+server in:
+
+```nginx
+# sseredis -metrics 127.0.0.1:9090 (or unix:/run/sseredis/metrics.sock)
+location = /sseredis/metrics {
+    allow 203.0.113.10;   # the Prometheus server
+    deny all;
+    proxy_pass http://127.0.0.1:9090/metrics;   # or http://unix:/run/sseredis/metrics.sock:/metrics
+}
+```
+
+- Put it in the HTTPS server: the allow rule says who may connect, TLS keeps the metrics (channel names,
+  traffic) private on the way.
+- `allow` checks `$remote_addr`. If nginx takes it from a header with `set_real_ip_from`/`real_ip_header`
+  (see [Client IP](#client-ip)), anyone the balancer lets through can claim the Prometheus address, unless
+  `set_real_ip_from` lists only the balancer.
+- Bind `-metrics` to `127.0.0.1` or a unix socket, so the only way in is this location.
+
+On the Prometheus side:
+
+```yaml
+scrape_configs:
+  - job_name: sseredis   # the alert rules expect this name
+    scheme: https
+    metrics_path: /sseredis/metrics
+    static_configs:
+      - targets: ["dmbcau.example.org"]
 ```
 
 ## Client IP
