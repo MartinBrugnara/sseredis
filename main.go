@@ -6,6 +6,7 @@ import (
 	"flag"
 	"log"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 )
@@ -67,7 +68,14 @@ func sseHandler(hub *Hub, auth Authenticator) func(w http.ResponseWriter, r *htt
 		w.Header().Set("Access-Control-Allow-Origin", *acao)
 		Debug("Sent Headers to %s", ip)
 
-		client := newClient(ip, r)
+		channels := requestedChannels(r)
+		if len(channels) == 0 {
+			Info("No channels requested by %s", ip)
+			http.Error(w, "No channels: use ?subscribe=chan1,chan2", http.StatusBadRequest)
+			return
+		}
+		Info("Subscribe %s @ %s", ip, channels)
+		client := newClientFor(ip, channels)
 		if err := auth.Auth(r, client); err != nil {
 			var authErr *AuthError
 			if errors.As(err, &authErr) {
@@ -112,8 +120,15 @@ func sseHandler(hub *Hub, auth Authenticator) func(w http.ResponseWriter, r *htt
 	}
 }
 
-func newClient(ip string, r *http.Request) *Client {
-	channels := strings.Split(r.FormValue("subscribe"), ",")
-	Info("Subscribe %s @ %s", ip, channels)
-	return newClientFor(ip, channels)
+// requestedChannels returns the channels in the subscribe parameter
+// (comma separated), sorted, without empty names and duplicates.
+func requestedChannels(r *http.Request) []string {
+	var channels []string
+	for _, ch := range strings.Split(r.FormValue("subscribe"), ",") {
+		if ch != "" {
+			channels = append(channels, ch)
+		}
+	}
+	slices.Sort(channels)
+	return slices.Compact(channels)
 }

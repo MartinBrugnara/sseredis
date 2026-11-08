@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -181,4 +182,38 @@ func TestServerStalledClientDoesNotBlockOthers(t *testing.T) {
 		}
 	}
 	waitClients(t, h, 1)
+}
+
+func TestRequestedChannels(t *testing.T) {
+	for query, want := range map[string][]string{
+		"":                       nil,
+		"?subscribe=":            nil,
+		"?subscribe=,,":          nil,
+		"?subscribe=b,a,,b":      {"a", "b"},
+		"?subscribe=a&other=1":   {"a"},
+		"?subscribe=a%2Cb":       {"a", "b"},
+		"?subscribe=user:1:feed": {"user:1:feed"},
+	} {
+		r := httptest.NewRequest("GET", "/"+query, nil)
+		if got := requestedChannels(r); !slices.Equal(got, want) {
+			t.Errorf("%q: channels = %q, want %q", query, got, want)
+		}
+	}
+}
+
+func TestServerRejectsNoChannels(t *testing.T) {
+	srv, h := newTestServer(t)
+	for _, query := range []string{"", "?subscribe=", "?subscribe=,"} {
+		resp, err := http.Get(srv.URL + "/" + query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%q: status %d, want 400", query, resp.StatusCode)
+		}
+	}
+	if n := h.clientCount(); n != 0 {
+		t.Errorf("clientCount = %d, want 0", n)
+	}
 }
