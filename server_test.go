@@ -234,3 +234,34 @@ func TestServerMultiLinePayload(t *testing.T) {
 		t.Errorf("got %q, want next", got)
 	}
 }
+
+// The headers arrive right away, before any message, and only on success.
+func TestServerHeaders(t *testing.T) {
+	srv, _ := newTestServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "GET", srv.URL+"/?subscribe=x", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("no response headers before any message: %s", err)
+	}
+	defer resp.Body.Close()
+	for name, want := range map[string]string{
+		"Content-Type":      "text/event-stream",
+		"Cache-Control":     "no-cache",
+		"X-Accel-Buffering": "no",
+	} {
+		if got := resp.Header.Get(name); got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
+
+	resp, err = http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if ct := resp.Header.Get("Content-Type"); strings.HasPrefix(ct, "text/event-stream") {
+		t.Errorf("error answered with Content-Type %q", ct)
+	}
+}

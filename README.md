@@ -50,6 +50,21 @@ user from reading another user's channels.
 `200` accepts the client. A `4xx` refuses it with the same status; anything else (including redirects, which
 are not followed, and timeouts) refuses it with `502`/`500`.
 
+## nginx
+
+A location proxying to sseredis (the path is an example):
+
+```nginx
+location /sse/ {
+    proxy_pass http://sseredis:80/;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_set_header X-Forwarded-For $remote_addr;   # on the public-facing nginx, see "Client IP"
+    proxy_buffering off;      # sseredis also sends "X-Accel-Buffering: no"
+    proxy_read_timeout 60s;   # the default; heartbeats every 10s keep the stream alive
+}
+```
+
 ## Client IP
 
 The client IP is logged and sent to Django (`clientip`). In production both Django and sseredis are behind

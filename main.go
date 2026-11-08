@@ -61,13 +61,6 @@ func sseHandler(hub *Hub, auth Authenticator) func(w http.ResponseWriter, r *htt
 		}
 		Debug("Streaming to %s", ip)
 
-		// Set proper headers
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-		w.Header().Set("Access-Control-Allow-Origin", *acao)
-		Debug("Sent Headers to %s", ip)
-
 		channels := requestedChannels(r)
 		if len(channels) == 0 {
 			Info("No channels requested by %s", ip)
@@ -91,8 +84,20 @@ func sseHandler(hub *Hub, auth Authenticator) func(w http.ResponseWriter, r *htt
 		hub.Subscribe(client)
 		defer hub.Unsubscribe(client)
 
-		Debug("Serving %s", ip)
+		// Send the headers now: the browser's EventSource only fires
+		// "open" once it has them, and the first message may be far away.
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("X-Accel-Buffering", "no") // nginx: do not buffer the stream
+		w.Header().Set("Access-Control-Allow-Origin", *acao)
+		w.WriteHeader(http.StatusOK)
 		rc := http.NewResponseController(w)
+		if err := rc.Flush(); err != nil {
+			Info("Disconnected %s: %s", ip, err)
+			return
+		}
+		Debug("Serving %s", ip)
 		for {
 			select {
 			case <-r.Context().Done():
