@@ -470,7 +470,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(increase(sseredis_clients_dropped_total{job=\"$job\", instance=~\"$instance\"}[1h]))",
+          "expr": "round(sum(increase(sseredis_clients_dropped_total{job=\"$job\", instance=~\"$instance\"}[1h])))",
           "legendFormat": "",
           "refId": "A",
           "range": false,
@@ -1189,7 +1189,8 @@
           "color": {
             "mode": "palette-classic"
           },
-          "min": 0
+          "min": 0,
+          "noValue": "0"
         },
         "overrides": []
       },
@@ -1663,8 +1664,8 @@
     },
     {
       "type": "timeseries",
-      "title": "CPU (Linux)",
-      "description": "process_* metrics exist only on Linux, macOS and Windows (not FreeBSD).",
+      "title": "CPU",
+      "description": "Not on FreeBSD: client_golang has no process collector there.",
       "targets": [
         {
           "datasource": {
@@ -1723,8 +1724,8 @@
     },
     {
       "type": "timeseries",
-      "title": "Open file descriptors (Linux)",
-      "description": "One per open stream, plus a few. process_* metrics exist only on Linux, macOS and Windows.",
+      "title": "Open file descriptors",
+      "description": "One per open stream, plus a few. Not on FreeBSD: client_golang has no process collector there.",
       "targets": [
         {
           "datasource": {
