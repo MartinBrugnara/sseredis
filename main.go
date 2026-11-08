@@ -22,7 +22,11 @@ func main() {
 	// Setup logging
 	logLv := flag.String("log", "INFO", "Log verbosity level")
 	flag.Parse()
-	LOG_LEVEL = LOG_STR_LV[*logLv]
+	if lv, err := parseLogLevel(*logLv); err != nil {
+		Fatal("%s", err)
+	} else {
+		LOG_LEVEL = lv
+	}
 	Info("Log level: %s", LOG_LV_STR[LOG_LEVEL])
 
 	// Setup Redis

@@ -21,7 +21,7 @@ var (
 		"INFO":    INFO,
 		"WARNING": WARNING,
 		"ERROR":   ERROR,
-		"FATAL":   ERROR,
+		"FATAL":   FATAL,
 	}
 
 	LOG_LV_STR = map[int]string{
@@ -29,15 +29,24 @@ var (
 		INFO:    "INFO",
 		WARNING: "WARNING",
 		ERROR:   "ERROR",
-		FATAL:   "ERROR",
+		FATAL:   "FATAL",
 	}
 
-	LOG_LEVEL int
+	LOG_LEVEL = INFO
 )
+
+// parseLogLevel returns the level named s (e.g. "INFO").
+func parseLogLevel(s string) (int, error) {
+	lv, ok := LOG_STR_LV[s]
+	if !ok {
+		return 0, fmt.Errorf("unknown log level %q (want DEBUG, INFO, WARNING, ERROR or FATAL)", s)
+	}
+	return lv, nil
+}
 
 func ext_log(level int, format string, a ...interface{}) {
 	if level >= LOG_LEVEL {
-		log.Printf(fmt.Sprintf("[%s] %s", LOG_LV_STR[level], format), a...)
+		log.Printf("[%s] %s", LOG_LV_STR[level], fmt.Sprintf(format, a...))
 	}
 }
 

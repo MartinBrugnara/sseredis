@@ -37,7 +37,7 @@ func redisLoop(opsCh chan<- func(Db)) {
 	for {
 		switch v := psc.Receive().(type) {
 		case redis.Message:
-			Debug("Message [%s] %s\n", v.Channel, v.Data)
+			Debug("Message [%s] %s", v.Channel, v.Data)
 			msg := fmt.Sprintf("data: %s\n\n", v.Data)
 			opsCh <- func(msg string) func(Db) {
 				return func(db Db) {
@@ -49,7 +49,7 @@ func redisLoop(opsCh chan<- func(Db)) {
 				}
 			}(msg)
 		case redis.Subscription:
-			Debug("[%s] %s -> #%d\n", v.Channel, v.Kind, v.Count)
+			Debug("[%s] %s -> #%d", v.Channel, v.Kind, v.Count)
 		case error:
 			Error("%s", v)
 		}
