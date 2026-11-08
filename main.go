@@ -18,6 +18,7 @@ var (
 	acao        = flag.String("origin", "*", "Access-Control-Allow-Origin")
 
 	djangoServer = flag.String("dmbcau", "http://dmbcau/authenticator/", "dmbcau auth API endpoint")
+	authTimeout  = flag.Duration("auth-timeout", 5*time.Second, "Timeout of a call to the auth API")
 
 	// writeTimeout bounds each write to a client, so a stalled client
 	// does not keep its handler around forever.
@@ -42,7 +43,7 @@ func main() {
 	go heartbeatLoop(hub, timerTick)
 
 	// Listen for guests
-	http.HandleFunc("/", sseHandler(hub, DjangoAuth{Endpoint: *djangoServer}))
+	http.HandleFunc("/", sseHandler(hub, NewDjangoAuth(*djangoServer, *authTimeout)))
 	Info("RDY, Listening @ %s", *listenAddr)
 	log.Fatal(http.ListenAndServe(*listenAddr, nil))
 }

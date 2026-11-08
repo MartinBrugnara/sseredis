@@ -2,33 +2,53 @@ package main
 
 import (
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeDjango is a stand-in for the dmbcau authenticator API.
 type fakeDjango struct {
 	*httptest.Server
-	status int // answer to every request
-
 	mu      sync.Mutex
 	queries []url.Values
+	conns   int // connections opened to the server
 }
 
 func newFakeDjango(t *testing.T, status int) *fakeDjango {
+	return newFakeDjangoFunc(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(status)
+		w.Write([]byte("some body"))
+	})
+}
+
+func newFakeDjangoFunc(t *testing.T, answer http.HandlerFunc) *fakeDjango {
 	t.Helper()
-	d := &fakeDjango{status: status}
-	d.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	d := &fakeDjango{}
+	d.Server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.mu.Lock()
 		d.queries = append(d.queries, r.URL.Query())
 		d.mu.Unlock()
-		w.WriteHeader(d.status)
+		answer(w, r)
 	}))
+	d.Config.ConnState = func(_ net.Conn, s http.ConnState) {
+		if s == http.StateNew {
+			d.mu.Lock()
+			d.conns++
+			d.mu.Unlock()
+		}
+	}
+	d.Start()
 	t.Cleanup(d.Close)
 	return d
+}
+
+func newTestDjangoAuth(d *fakeDjango) DjangoAuth {
+	return NewDjangoAuth(d.URL+"/authenticator/", time.Second)
 }
 
 func (d *fakeDjango) lastQuery(t *testing.T) url.Values {
@@ -59,7 +79,7 @@ func authStatus(err error) int {
 
 func TestDjangoAuthAccepts(t *testing.T) {
 	d := newFakeDjango(t, http.StatusOK)
-	auth := DjangoAuth{Endpoint: d.URL + "/authenticator/"}
+	auth := newTestDjangoAuth(d)
 
 	if err := auth.Auth(authRequest("s3cr3t"), newClientFor("1.2.3.4", []string{"x"})); err != nil {
 		t.Fatalf("Auth: %s", err)
@@ -71,7 +91,7 @@ func TestDjangoAuthAccepts(t *testing.T) {
 
 func TestDjangoAuthRefuses(t *testing.T) {
 	d := newFakeDjango(t, http.StatusForbidden)
-	auth := DjangoAuth{Endpoint: d.URL + "/authenticator/"}
+	auth := newTestDjangoAuth(d)
 
 	err := auth.Auth(authRequest("expired"), newClientFor("1.2.3.4", []string{"x"}))
 	if got := authStatus(err); got != http.StatusForbidden {
@@ -81,7 +101,7 @@ func TestDjangoAuthRefuses(t *testing.T) {
 
 func TestDjangoAuthNeedsCookie(t *testing.T) {
 	d := newFakeDjango(t, http.StatusOK)
-	auth := DjangoAuth{Endpoint: d.URL + "/authenticator/"}
+	auth := newTestDjangoAuth(d)
 
 	err := auth.Auth(authRequest(""), newClientFor("1.2.3.4", []string{"x"}))
 	if got := authStatus(err); got != http.StatusUnprocessableEntity {
@@ -95,7 +115,7 @@ func TestDjangoAuthNeedsCookie(t *testing.T) {
 func TestDjangoAuthDown(t *testing.T) {
 	d := newFakeDjango(t, http.StatusOK)
 	d.Close()
-	auth := DjangoAuth{Endpoint: d.URL + "/authenticator/"}
+	auth := newTestDjangoAuth(d)
 
 	err := auth.Auth(authRequest("s3cr3t"), newClientFor("1.2.3.4", []string{"x"}))
 	if err == nil || authStatus(err) != 0 {
@@ -134,5 +154,62 @@ func TestServerAnswersAuthFailures(t *testing.T) {
 		if n := h.clientCount(); n != 0 {
 			t.Errorf("%T: refused client was subscribed", tc.auth)
 		}
+	}
+}
+
+func TestDjangoAuthReusesConnections(t *testing.T) {
+	d := newFakeDjango(t, http.StatusOK)
+	auth := newTestDjangoAuth(d)
+	for i := 0; i < 5; i++ {
+		if err := auth.Auth(authRequest("s3cr3t"), newClientFor("1.2.3.4", []string{"x"})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.conns != 1 {
+		t.Errorf("opened %d connections for 5 calls, want 1 (response bodies not closed?)", d.conns)
+	}
+}
+
+func TestDjangoAuthTimeout(t *testing.T) {
+	release := make(chan struct{})
+	d := newFakeDjangoFunc(t, func(w http.ResponseWriter, r *http.Request) {
+		<-release
+	})
+	defer close(release) // before d.Close, which waits for the handler
+	auth := NewDjangoAuth(d.URL+"/authenticator/", 100*time.Millisecond)
+
+	start := time.Now()
+	err := auth.Auth(authRequest("s3cr3t"), newClientFor("1.2.3.4", []string{"x"}))
+	if err == nil {
+		t.Fatal("hanging django accepted the request")
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("gave up after %s", d)
+	}
+}
+
+func TestDjangoAuthDoesNotFollowRedirects(t *testing.T) {
+	d := newFakeDjangoFunc(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/login/" {
+			w.WriteHeader(http.StatusOK) // a login page
+			return
+		}
+		http.Redirect(w, r, "/login/", http.StatusFound)
+	})
+	auth := newTestDjangoAuth(d)
+
+	err := auth.Auth(authRequest("s3cr3t"), newClientFor("1.2.3.4", []string{"x"}))
+	if got := authStatus(err); got != http.StatusBadGateway {
+		t.Errorf("err = %v, want status 502", err)
+	}
+}
+
+func TestDjangoAuthServerError(t *testing.T) {
+	d := newFakeDjango(t, http.StatusInternalServerError)
+	err := newTestDjangoAuth(d).Auth(authRequest("s3cr3t"), newClientFor("1.2.3.4", []string{"x"}))
+	if got := authStatus(err); got != http.StatusBadGateway {
+		t.Errorf("err = %v, want status 502", err)
 	}
 }
