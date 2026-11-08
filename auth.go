@@ -26,7 +26,8 @@ func (e *AuthError) Error() string {
 	return fmt.Sprintf("%d %s: %s", e.Status, http.StatusText(e.Status), e.Reason)
 }
 
-// DjangoAuth authenticates against active Django sessions.
+// DjangoAuth authenticates against active Django sessions, and lets Django
+// decide whether the session may read the requested channels.
 type DjangoAuth struct {
 	Endpoint string       // URL of the dmbcau authenticator API
 	Client   *http.Client // see NewDjangoAuth
@@ -57,6 +58,9 @@ func (d DjangoAuth) Auth(r *http.Request, c *Client) error {
 	params := url.Values{}
 	params.Add("sessionid", sessionID.Value)
 	params.Add("clientip", c.ip)
+	for _, ch := range c.Channels() {
+		params.Add("channel", ch)
+	}
 
 	req, err := http.NewRequestWithContext(r.Context(), "GET", d.Endpoint+"?"+params.Encode(), nil)
 	if err != nil {

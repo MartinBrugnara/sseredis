@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -81,10 +82,13 @@ func TestDjangoAuthAccepts(t *testing.T) {
 	d := newFakeDjango(t, http.StatusOK)
 	auth := newTestDjangoAuth(d)
 
-	if err := auth.Auth(authRequest("s3cr3t"), newClientFor("1.2.3.4", []string{"x"})); err != nil {
+	if err := auth.Auth(authRequest("s3cr3t"), newClientFor("1.2.3.4", []string{"y", "x"})); err != nil {
 		t.Fatalf("Auth: %s", err)
 	}
 	q := d.lastQuery(t)
+	if got := q["channel"]; !reflect.DeepEqual(got, []string{"x", "y"}) {
+		t.Errorf("channel = %q, want [x y]", got)
+	}
 	if got := q.Get("sessionid"); got != "s3cr3t" {
 		t.Errorf("sessionid = %q", got)
 	}
@@ -215,5 +219,38 @@ func TestDjangoAuthServerError(t *testing.T) {
 	err := newTestDjangoAuth(d).Auth(authRequest("s3cr3t"), newClientFor("1.2.3.4", []string{"x"}))
 	if got := authStatus(err); got != http.StatusBadGateway {
 		t.Errorf("err = %v, want status 502", err)
+	}
+}
+
+// Django decides which channels a session may read.
+func TestServerChannelsAuthorizedByDjango(t *testing.T) {
+	d := newFakeDjangoFunc(t, func(w http.ResponseWriter, r *http.Request) {
+		for _, ch := range r.URL.Query()["channel"] {
+			if ch != "public" {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+		}
+	})
+	srv, h := newTestServerWithAuth(t, newTestDjangoAuth(d))
+
+	req := getRequest(t, srv.URL+"/?subscribe=public,private")
+	req.AddCookie(&http.Cookie{Name: "sessionid", Value: "s3cr3t"})
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status %d, want 403", resp.StatusCode)
+	}
+
+	req = getRequest(t, srv.URL+"/?subscribe=public")
+	req.AddCookie(&http.Cookie{Name: "sessionid", Value: "s3cr3t"})
+	c := connect(t, req)
+	waitClients(t, h, 1)
+	h.Publish("public", []byte("data: ok\n\n"))
+	if got := c.next(t); got != "ok" {
+		t.Errorf("got %q", got)
 	}
 }

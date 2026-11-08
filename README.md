@@ -36,11 +36,16 @@ A client opens `GET /?subscribe=chan1,chan2`. After [authentication](#authentica
 ## Authentication
 
 Authentication goes through the `Authenticator` interface (`auth.go`), so another backend can replace Django.
-`DjangoAuth` reads the `sessionid` cookie and calls the authenticator API:
+`DjangoAuth` reads the `sessionid` cookie and calls the authenticator API with the requested channels, one
+`channel` parameter each (`request.GET.getlist("channel")` in Django):
 
 ```
-GET <-dmbcau>?sessionid=<cookie>&clientip=<client IP>
+GET <-dmbcau>?sessionid=<cookie>&clientip=<client IP>&channel=<chan1>&channel=<chan2>
 ```
+
+Django must answer `200` only if the session is valid **and** may read every listed channel, `403` otherwise:
+sseredis subscribes to whatever channel the client asks for, so this check is the only thing keeping a
+user from reading another user's channels.
 
 `200` accepts the client. A `4xx` refuses it with the same status; anything else (including redirects, which
 are not followed, and timeouts) refuses it with `502`/`500`.

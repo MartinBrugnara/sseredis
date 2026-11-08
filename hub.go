@@ -1,6 +1,8 @@
 package main
 
 import (
+	"maps"
+	"slices"
 	"time"
 )
 
@@ -26,6 +28,11 @@ type Client struct {
 	// out carries the messages to write to the client. Only the Hub
 	// goroutine sends on it, and it closes it when it drops the client.
 	out chan []byte
+}
+
+// Channels returns the channels c subscribes to, sorted.
+func (c *Client) Channels() []string {
+	return slices.Sorted(maps.Keys(c.subs))
 }
 
 func newClientFor(ip string, channels []string) *Client {
