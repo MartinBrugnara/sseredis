@@ -121,9 +121,9 @@ own, so they are never reachable through the public `-listen` address. The repos
 
 - `grafana/sseredis.json`: a Grafana dashboard (Dashboards > New > Import, then pick the Prometheus data
   source). Its `job` and `instance` variables select the targets.
-- `grafana/alerts.yaml`: Grafana alert rules (file provisioning: `/etc/grafana/provisioning/alerting/`). Set
-  the uid of your Prometheus data source (`__PROMETHEUS_UID__`) and, if your scrape job isn't called
-  `sseredis`, its name; the commands are at the top of the file.
+- `grafana/alerts.yaml`: alert rules in Prometheus' rule-file format. Import them into Grafana (Alerting > Alert
+  rules > Import alert rules, source a Prometheus YAML file) or load them in Prometheus (`rule_files`). If your
+  scrape job isn't called `sseredis`, set its name first; the command is at the top of the file.
 
 ![The sseredis dashboard with simulated traffic](grafana/sseredis.png)
 

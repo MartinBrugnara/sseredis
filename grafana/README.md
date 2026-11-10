@@ -2,8 +2,9 @@
 
 - `sseredis.json`: the dashboard (Dashboards > New > Import, then pick the Prometheus data source). See
   [Monitoring](../README.md#monitoring) for the metrics and the scrape setup.
-- `alerts.yaml`: the alert rules (Grafana file provisioning): sseredis down, Redis disconnected or flapping,
-  authentication errors (over 5%) or slow (p95 over 1s), slow clients dropped. Installing: the top of the file.
+- `alerts.yaml`: the alert rules (Prometheus rule file, for Grafana's import or Prometheus): sseredis down,
+  Redis disconnected or flapping, authentication errors (over 5%) or slow (p95 over 1s), slow clients dropped.
+  Installing: the top of the file.
 - `sseredis.png`: a screenshot of the dashboard, with the simulated workload below.
 
 ## Workload of `sseredis.png`

@@ -1,200 +1,85 @@
-# Grafana alert rules for sseredis (see "Monitoring" in README.md), in Grafana's file provisioning format:
-# copy to /etc/grafana/provisioning/alerting/ and restart Grafana.
+# Alert rules for sseredis (see "Monitoring" in README.md), in Prometheus' rule-file format: import them into
+# Grafana (Alerting > Alert rules > Import alert rules, source a Prometheus YAML file, pick the Prometheus data
+# source), or load them in Prometheus itself (rule_files).
 #
-# Before installing, replace:
-#   __PROMETHEUS_UID__   the uid of your Prometheus data source
-#   job="sseredis"       if your scrape job has another name
+# If your scrape job isn't called "sseredis", set its name first:
 #
-#   sed -e 's/__PROMETHEUS_UID__/<uid>/' -e 's/job="sseredis"/job="<job>"/' grafana/alerts.yaml \
-#     > /etc/grafana/provisioning/alerting/sseredis.yaml
+#   sed 's/job="sseredis"/job="<job>"/' grafana/alerts.yaml > sseredis-alerts.yaml
 #
-# Each rule: A = the PromQL query (instant), C = the threshold on A. The annotations use .Labels / .Values, not
-# $labels / $values: Grafana expands environment variables ($NAME) in provisioning files.
-apiVersion: 1
-
+# Each rule fires for every series its expression returns. Grafana imports them with "no data" and "error" as
+# OK, so SseredisDown also fires without any target (absent()).
 groups:
-  - orgId: 1
-    name: sseredis
-    folder: sseredis
+  - name: sseredis
     interval: 1m
     rules:
-      - uid: sseredis-down
-        title: SseredisDown
-        condition: C
-        data:
-          - refId: A
-            relativeTimeRange: {from: 600, to: 0}
-            datasourceUid: __PROMETHEUS_UID__
-            model:
-              refId: A
-              expr: up{job="sseredis"}
-              instant: true
-          - refId: C
-            datasourceUid: __expr__
-            model:
-              refId: C
-              type: threshold
-              expression: A
-              conditions:
-                - evaluator: {type: lt, params: [1]}
+      - alert: SseredisDown
+        # Also when there is no target at all: the scrape config is gone.
+        expr: up{job="sseredis"} < 1 or absent(up{job="sseredis"})
         for: 2m
-        noDataState: Alerting       # no target at all: the scrape config is gone
-        execErrState: Error
         labels: {service: sseredis, severity: critical}
         annotations:
-          summary: 'sseredis {{ .Labels.instance }} cannot be scraped'
+          summary: '{{ with $labels.instance }}sseredis {{ . }} cannot be scraped{{ else }}Prometheus scrapes no sseredis{{ end }}'
           description: >-
             Prometheus has not reached the sseredis metrics for 2 minutes: sseredis is down, or nginx
             (or its allow rule) blocks the scrape. Live updates are probably down.
 
-      - uid: sseredis-redis-disconnected
-        title: SseredisRedisDisconnected
-        condition: C
-        data:
-          - refId: A
-            relativeTimeRange: {from: 600, to: 0}
-            datasourceUid: __PROMETHEUS_UID__
-            model:
-              refId: A
-              expr: sseredis_redis_connected{job="sseredis"}
-              instant: true
-          - refId: C
-            datasourceUid: __expr__
-            model:
-              refId: C
-              type: threshold
-              expression: A
-              conditions:
-                - evaluator: {type: lt, params: [1]}
-        for: 1m
-        noDataState: OK             # SseredisDown says it
-        execErrState: Error
+      - alert: SseredisRedisDisconnected
+        expr: sseredis_redis_connected{job="sseredis"} < 1
+        for: 1m                     # no data: SseredisDown says it
         labels: {service: sseredis, severity: critical}
         annotations:
-          summary: 'sseredis {{ .Labels.instance }} is not connected to Redis'
+          summary: 'sseredis {{ $labels.instance }} is not connected to Redis'
           description: >-
             sseredis has been disconnected from Redis for over a minute: no live update is delivered.
             It keeps reconnecting (backoff up to 30s); check that Redis is running and reachable.
 
-      - uid: sseredis-redis-flapping
-        title: SseredisRedisFlapping
-        condition: C
-        data:
-          - refId: A
-            relativeTimeRange: {from: 900, to: 0}
-            datasourceUid: __PROMETHEUS_UID__
-            model:
-              refId: A
-              expr: increase(sseredis_redis_connects_total{job="sseredis", result="ok"}[15m])
-              instant: true
-          - refId: C
-            datasourceUid: __expr__
-            model:
-              refId: C
-              type: threshold
-              expression: A
-              conditions:
-                - evaluator: {type: gt, params: [3]}
+      - alert: SseredisRedisFlapping
+        expr: increase(sseredis_redis_connects_total{job="sseredis", result="ok"}[15m]) > 3
         for: 0s
-        noDataState: OK
-        execErrState: Error
         labels: {service: sseredis, severity: warning}
         annotations:
-          summary: 'sseredis {{ .Labels.instance }} keeps reconnecting to Redis'
+          summary: 'sseredis {{ $labels.instance }} keeps reconnecting to Redis'
           description: >-
-            {{ printf "%.0f" .Values.A.Value }} Redis connections in 15 minutes. Messages published while
+            {{ printf "%.0f" $value }} Redis connections in 15 minutes. Messages published while
             disconnected are lost.
 
-      - uid: sseredis-auth-errors
-        title: SseredisAuthErrors
-        condition: C
-        data:
-          - refId: A
-            relativeTimeRange: {from: 600, to: 0}
-            datasourceUid: __PROMETHEUS_UID__
-            model:
-              refId: A
-              # The share of authentications that fail (refused sessions are not failures); only with
-              # authentications (no 0/0).
-              expr: >-
-                sum by (instance) (rate(sseredis_connections_total{job="sseredis", result="auth_error"}[5m]))
-                / sum by (instance) (rate(sseredis_connections_total{job="sseredis", result=~"ok|refused|auth_error"}[5m]))
-                and sum by (instance) (rate(sseredis_connections_total{job="sseredis", result=~"ok|refused|auth_error"}[5m])) > 0
-              instant: true
-          - refId: C
-            datasourceUid: __expr__
-            model:
-              refId: C
-              type: threshold
-              expression: A
-              conditions:
-                - evaluator: {type: gt, params: [0.05]}
+      - alert: SseredisAuthErrors
+        # The share of authentications that fail (refused sessions are not failures); only with authentications
+        # (no 0/0).
+        expr: >-
+          (
+            sum by (instance) (rate(sseredis_connections_total{job="sseredis", result="auth_error"}[5m]))
+            / sum by (instance) (rate(sseredis_connections_total{job="sseredis", result=~"ok|refused|auth_error"}[5m]))
+            and sum by (instance) (rate(sseredis_connections_total{job="sseredis", result=~"ok|refused|auth_error"}[5m])) > 0
+          ) > 0.05
         for: 5m
-        noDataState: OK
-        execErrState: Error
         labels: {service: sseredis, severity: critical}
         annotations:
-          summary: 'sseredis {{ .Labels.instance }}: {{ humanizePercentage .Values.A.Value }} of authentications fail'
+          summary: 'sseredis {{ $labels.instance }}: {{ humanizePercentage $value }} of authentications fail'
           description: >-
             The Django authenticator API is down, times out or answers 5xx, so users cannot open live
             updates. (Refused sessions are not counted.)
 
-      - uid: sseredis-auth-slow
-        title: SseredisAuthSlow
-        condition: C
-        data:
-          - refId: A
-            relativeTimeRange: {from: 600, to: 0}
-            datasourceUid: __PROMETHEUS_UID__
-            model:
-              refId: A
-              # p95 of the authentication time; only with authentications (no NaN).
-              expr: >-
-                histogram_quantile(0.95, sum by (instance, le) (rate(sseredis_auth_duration_seconds_bucket{job="sseredis"}[5m])))
-                and sum by (instance) (rate(sseredis_auth_duration_seconds_count{job="sseredis"}[5m])) > 0
-              instant: true
-          - refId: C
-            datasourceUid: __expr__
-            model:
-              refId: C
-              type: threshold
-              expression: A
-              conditions:
-                - evaluator: {type: gt, params: [1]}
+      - alert: SseredisAuthSlow
+        # p95 of the authentication time; only with authentications (no NaN).
+        expr: >-
+          (
+            histogram_quantile(0.95, sum by (instance, le) (rate(sseredis_auth_duration_seconds_bucket{job="sseredis"}[5m])))
+            and sum by (instance) (rate(sseredis_auth_duration_seconds_count{job="sseredis"}[5m])) > 0
+          ) > 1
         for: 10m
-        noDataState: OK
-        execErrState: Error
         labels: {service: sseredis, severity: warning}
         annotations:
-          summary: 'sseredis {{ .Labels.instance }}: authentication p95 is {{ humanizeDuration .Values.A.Value }}'
+          summary: 'sseredis {{ $labels.instance }}: authentication p95 is {{ humanizeDuration $value }}'
           description: >-
             The Django authenticator API is slow; at -auth-timeout (5s by default) connections fail.
 
-      - uid: sseredis-dropping-clients
-        title: SseredisDroppingClients
-        condition: C
-        data:
-          - refId: A
-            relativeTimeRange: {from: 900, to: 0}
-            datasourceUid: __PROMETHEUS_UID__
-            model:
-              refId: A
-              expr: increase(sseredis_clients_dropped_total{job="sseredis"}[15m])
-              instant: true
-          - refId: C
-            datasourceUid: __expr__
-            model:
-              refId: C
-              type: threshold
-              expression: A
-              conditions:
-                - evaluator: {type: gt, params: [10]}
+      - alert: SseredisDroppingClients
+        expr: increase(sseredis_clients_dropped_total{job="sseredis"}[15m]) > 10
         for: 0s
-        noDataState: OK
-        execErrState: Error
         labels: {service: sseredis, severity: warning}
         annotations:
-          summary: 'sseredis {{ .Labels.instance }} dropped {{ printf "%.0f" .Values.A.Value }} slow clients in 15 minutes'
+          summary: 'sseredis {{ $labels.instance }} dropped {{ printf "%.0f" $value }} slow clients in 15 minutes'
           description: >-
             Clients do not read their stream fast enough (their queue of 64 messages filled up). A few
             are normal (bad mobile networks); many point to a proxy buffering the stream, or to bursts
