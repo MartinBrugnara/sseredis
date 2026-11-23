@@ -92,7 +92,8 @@ Authentication goes through the `Authenticator` interface (`auth.go`), so anothe
 GET <-dmbcau>?sessionid=<cookie>&clientip=<client IP>&channel=<chan1>&channel=<chan2>
 ```
 
-Django must answer `200` only if the session is valid **and** may read every listed channel, `403` otherwise:
+Django must answer `200` only if the session is valid **and** may read every listed channel, a `4xx` otherwise
+(e.g. `403`):
 sseredis subscribes to whatever channel the client asks for, so this check is the only thing keeping a
 user from reading another user's channels.
 
@@ -209,7 +210,9 @@ The rule (`clientIP` in `ip.go`):
   proxies, and its **first entry is the client**.
 - sseredis takes the first entry. Without the header (or if it is not an IP) it uses the address of the peer
   that connected to it, or `unix` if that peer came through a unix socket.
-- Django must compute the client IP the same way, or the IP sseredis sends will not match the session's.
+- Django gets it as `clientip` and decides with it (e.g. dmbcau: a trusted network, or a permission to work from
+  elsewhere). If Django also computes the client IP for its own pages, it must do it the same way, or the two
+  disagree. sseredis checks the session only when the stream opens: an open stream is not re-checked.
 
 What nginx must do:
 
