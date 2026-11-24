@@ -18,6 +18,7 @@ go build && ./sseredis -redis redis:6379 -listen :80 -dmbcau http://dmbcau/authe
 | `-dmbcau` | `http://dmbcau/authenticator/` | Django authenticator API (see [Authentication](#authentication)). |
 | `-dmbcau-socket` | (empty) | Unix socket to reach the authenticator API through. The `-dmbcau` URL still gives the scheme, `Host` header and path. Empty: connect to the URL's host. |
 | `-auth-timeout` | `5s` | Timeout of a call to the authenticator API. |
+| `-reauth` | `2m` | Check every open stream again this often (see [Authentication](#authentication)). `0`: only when it opens. |
 | `-origin` | (empty) | Origin allowed to open the stream cross-origin, with its cookies (e.g. `https://app.example.org`). Empty: same-origin only. `*` allows any origin but without cookies, so only without authentication. |
 | `-metrics` | (empty) | Address to serve [Prometheus metrics](#monitoring) on, at `/metrics`: `host:port`, or `unix:/path/to/sock`. Empty: no metrics. Never the `-listen` address. |
 | `-metrics-mode` | `0660` | Permissions (octal) of the `-metrics` unix socket. Ignored for TCP. |
@@ -100,6 +101,14 @@ user from reading another user's channels.
 `200` accepts the client. A `4xx` refuses it with the same status; anything else (including redirects, which
 are not followed, and timeouts) refuses it with `502`/`500`.
 
+An open stream is checked again every `-reauth` (2 minutes by default), with the same call: a user who logged
+out, lost the permission or whose session ended loses the stream within that time. The first check of each
+stream comes at a random time in the second half of the interval, so streams opened together (e.g. after a
+restart) are not all checked at once. A `4xx` closes the stream (the browser's `EventSource` reconnects and is
+then refused). Anything else keeps it, and it is checked again at the next tick: an authenticator restarting
+doesn't drop every client. The checks run beside the stream, so a slow authenticator doesn't delay messages.
+Every check is a call to the authenticator: with `n` streams, about `n / reauth` calls a second.
+
 ## nginx
 
 A location proxying to sseredis (the path is an example):
@@ -140,10 +149,11 @@ The full workload is in [`grafana/README.md`](grafana/README.md).
 | `sseredis_clients_connected` | gauge | SSE streams open now. |
 | `sseredis_channel_clients{channel}` | gauge | Streams open now, by channel (a stream counts in each of its channels). |
 | `sseredis_connections_total{result}` | counter | Connection attempts: `ok`, `no_channels`, `refused` (the authenticator answered 4xx, e.g. an expired session), `auth_error` (it is down, timed out or answered 5xx), `streaming_unsupported`. |
-| `sseredis_disconnections_total{reason}` | counter | Streams closed, by how the handler noticed: `client_gone` (client or server hung up), `write_error` (includes the 30s write timeout), `dropped` (the hub had already dropped it). |
+| `sseredis_disconnections_total{reason}` | counter | Streams closed, by how the handler noticed: `client_gone` (client or server hung up), `write_error` (includes the 30s write timeout), `dropped` (the hub had already dropped it), `reauth_refused` (a check of the open stream was refused). |
 | `sseredis_clients_dropped_total` | counter | Clients the hub dropped because their queue was full. The handler of such a client is usually stuck in a write, so it mostly shows up as a `write_error` disconnection 30s later: use this counter for drops. |
 | `sseredis_connection_duration_seconds` | histogram | How long streams stayed open (observed when they close). |
-| `sseredis_auth_duration_seconds{result}` | histogram | Time to authenticate a connection: `ok`, `refused`, `error`. |
+| `sseredis_auth_duration_seconds{result}` | histogram | Time to authenticate a connection or check an open stream again: `ok`, `refused`, `error`. |
+| `sseredis_reauths_total{result}` | counter | Checks of open streams (`-reauth`): `ok`, `refused` (the stream was closed), `error` (the authenticator failed; the stream is kept). |
 | `sseredis_redis_connected` | gauge | 1 while connected to Redis. |
 | `sseredis_redis_connects_total{result}` | counter | Attempts to connect to Redis: `ok`, `error`. |
 | `sseredis_redis_errors_total` | counter | Errors on the Redis connection (including the ones that close it) and failed (un)subscribes. |
@@ -212,7 +222,7 @@ The rule (`clientIP` in `ip.go`):
   that connected to it, or `unix` if that peer came through a unix socket.
 - Django gets it as `clientip` and decides with it (e.g. dmbcau: a trusted network, or a permission to work from
   elsewhere). If Django also computes the client IP for its own pages, it must do it the same way, or the two
-  disagree. sseredis checks the session only when the stream opens: an open stream is not re-checked.
+  disagree. The checks of an open stream (`-reauth`) send the IP of the request that opened it.
 
 What nginx must do:
 

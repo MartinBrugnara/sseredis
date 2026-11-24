@@ -23,7 +23,7 @@ var (
 	connectionsTotal = newCounterVec("connections_total",
 		"Connection attempts by result: ok, no_channels, refused (the authenticator said no), auth_error (it failed) or streaming_unsupported.", "result")
 	disconnectionsTotal = newCounterVec("disconnections_total",
-		"Streams closed, by how the handler noticed: client_gone (client or server hung up), write_error (includes write timeouts) or dropped (the Hub had dropped it, see clients_dropped_total).", "reason")
+		"Streams closed, by how the handler noticed: client_gone (client or server hung up), write_error (includes write timeouts), dropped (the Hub had dropped it, see clients_dropped_total) or reauth_refused (a check of the open stream was refused, see -reauth).", "reason")
 	// Counted by the Hub, where the drop happens: the handler of a stalled
 	// client is usually stuck in a write, and notices only when the write
 	// times out (a write_error disconnection).
@@ -34,8 +34,11 @@ var (
 		[]float64{1, 5, 30, 60, 300, 900, 1800, 3600, 2 * 3600, 4 * 3600, 12 * 3600, 24 * 3600})
 
 	authDuration = newHistogramVec("auth_duration_seconds",
-		"Time to authenticate a connection, by result: ok, refused or error.",
+		"Time to authenticate a connection or to check an open stream again (-reauth), by result: ok, refused or error.",
 		[]float64{.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10}, "result")
+
+	reauthsTotal = newCounterVec("reauths_total",
+		"Checks of open streams (-reauth), by result: ok, refused (the stream is closed) or error (the authenticator failed; the stream is kept).", "result")
 
 	redisConnected = newGauge("redis_connected",
 		"1 while connected to Redis, 0 otherwise.")
@@ -69,11 +72,12 @@ func init() {
 	for _, r := range []string{"ok", "no_channels", "refused", "auth_error", "streaming_unsupported"} {
 		connectionsTotal.WithLabelValues(r)
 	}
-	for _, r := range []string{"client_gone", "write_error", "dropped"} {
+	for _, r := range []string{"client_gone", "write_error", "dropped", "reauth_refused"} {
 		disconnectionsTotal.WithLabelValues(r)
 	}
 	for _, r := range []string{"ok", "refused", "error"} {
 		authDuration.WithLabelValues(r)
+		reauthsTotal.WithLabelValues(r)
 	}
 	for _, r := range []string{"ok", "error"} {
 		redisConnectsTotal.WithLabelValues(r)

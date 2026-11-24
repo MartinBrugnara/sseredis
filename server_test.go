@@ -99,7 +99,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *Hub) {
 func newTestServerWithAuth(t *testing.T, auth Authenticator) (*httptest.Server, *Hub) {
 	t.Helper()
 	h, _ := newTestHub(t)
-	srv := httptest.NewServer(http.HandlerFunc(sseHandler(h, auth)))
+	srv := httptest.NewServer(http.HandlerFunc(sseHandler(h, auth, 0)))
 	t.Cleanup(srv.Close)
 	return srv, h
 }
@@ -294,7 +294,7 @@ func newTimeoutServer(t *testing.T, d time.Duration) (*httptest.Server, *Hub) {
 	t.Cleanup(func() { readHeaderTimeout, idleTimeout = oldHeader, oldIdle })
 	h, _ := newTestHub(t)
 	srv := httptest.NewUnstartedServer(nil)
-	srv.Config = newServer(http.HandlerFunc(sseHandler(h, NoAuth{})))
+	srv.Config = newServer(http.HandlerFunc(sseHandler(h, NoAuth{}, 0)))
 	srv.Start()
 	t.Cleanup(srv.Close)
 	return srv, h

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"os/signal"
@@ -26,6 +27,7 @@ var (
 	djangoServer = flag.String("dmbcau", "http://dmbcau/authenticator/", "dmbcau auth API endpoint")
 	djangoSocket = flag.String("dmbcau-socket", "", "Unix socket to reach the auth API through (the -dmbcau URL still gives scheme, Host and path); empty: connect to the URL's host")
 	authTimeout  = flag.Duration("auth-timeout", 5*time.Second, "Timeout of a call to the auth API")
+	reauthEvery  = flag.Duration("reauth", 2*time.Minute, "Check every open stream again this often, with the same call as when it opened: a refusal (4xx) closes it, an error keeps it until the next check; 0: only when it opens")
 
 	// writeTimeout bounds each write to a client, so a stalled client
 	// does not keep its handler around forever.
@@ -69,7 +71,7 @@ func main() {
 		Fatal("Listen @ %s: %s", *listenAddr, err)
 	}
 	auth := NewDjangoAuth(*djangoServer, *djangoSocket, *authTimeout)
-	srv := newServer(http.HandlerFunc(sseHandler(hub, auth)))
+	srv := newServer(http.HandlerFunc(sseHandler(hub, auth, *reauthEvery)))
 	var metricsSrv *http.Server
 	if *metricsAddr != "" {
 		ml, err := listen(*metricsAddr, *metricsMode)
@@ -103,7 +105,34 @@ func main() {
 	}
 }
 
-func sseHandler(hub *Hub, auth Authenticator) func(w http.ResponseWriter, r *http.Request) {
+// authResult classifies the answer of an Authenticator: "ok", "refused"
+// (a 4xx AuthError: the session may not have the stream) or "error" (the
+// authenticator failed: a 5xx AuthError or any other error). authErr is the
+// AuthError, if err is one.
+func authResult(err error) (result string, authErr *AuthError) {
+	if err == nil {
+		return "ok", nil
+	}
+	if errors.As(err, &authErr) && authErr.Status < 500 {
+		return "refused", authErr
+	}
+	return "error", authErr
+}
+
+// firstReauth is when an open stream is checked the first time: somewhere
+// in the second half of the interval, so the checks of streams opened
+// together (e.g. after a restart) spread out, and none waits longer than
+// the interval.
+func firstReauth(every time.Duration) time.Duration {
+	if every < 2 {
+		return every
+	}
+	return every/2 + rand.N(every/2)
+}
+
+// sseHandler serves the streams. Every reauth (0: never) each open stream
+// is authenticated again; see -reauth.
+func sseHandler(hub *Hub, auth Authenticator, reauth time.Duration) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ip := clientIP(r)
 		Info("Got connection: %s", ip)
@@ -129,22 +158,18 @@ func sseHandler(hub *Hub, auth Authenticator) func(w http.ResponseWriter, r *htt
 		err := auth.Auth(r, client)
 		// A 5xx AuthError (e.g. Django answered 500) is the authenticator
 		// failing, not refusing: count and log it as an error.
-		var authErr *AuthError
-		isAuthErr := errors.As(err, &authErr)
-		switch {
-		case err == nil:
-			authDuration.WithLabelValues("ok").Observe(time.Since(authStart).Seconds())
-		case isAuthErr && authErr.Status < 500:
-			authDuration.WithLabelValues("refused").Observe(time.Since(authStart).Seconds())
+		result, authErr := authResult(err)
+		authDuration.WithLabelValues(result).Observe(time.Since(authStart).Seconds())
+		switch result {
+		case "refused":
 			connectionsTotal.WithLabelValues("refused").Inc()
 			Warn("Authentication failed for %s: %s", ip, err)
 			http.Error(w, http.StatusText(authErr.Status), authErr.Status)
 			return
-		default:
-			authDuration.WithLabelValues("error").Observe(time.Since(authStart).Seconds())
+		case "error":
 			connectionsTotal.WithLabelValues("auth_error").Inc()
 			Error("Authentication error for %s: %s", ip, err)
-			if isAuthErr {
+			if authErr != nil {
 				http.Error(w, http.StatusText(authErr.Status), authErr.Status)
 			} else {
 				http.Error(w, "Authentication error", http.StatusInternalServerError)
@@ -178,12 +203,58 @@ func sseHandler(hub *Hub, auth Authenticator) func(w http.ResponseWriter, r *htt
 			Info("Disconnected %s: %s", ip, err)
 			return
 		}
+		// The checks of the open stream (-reauth). Each runs on its own
+		// goroutine, so a slow authenticator never holds the messages up;
+		// the next one is timed once its answer is in. reauthC is nil
+		// while a check runs, and with reauth 0: that case never fires.
+		var reauthTimer *time.Timer
+		var reauthC <-chan time.Time
+		reauthDone := make(chan error, 1)
+		checking := false
+		if reauth > 0 {
+			reauthTimer = time.NewTimer(firstReauth(reauth))
+			defer reauthTimer.Stop()
+			reauthC = reauthTimer.C
+		}
+		// A check still running uses r: wait for it (it ends quickly, its
+		// call is cancelled with r's context when we return).
+		defer func() {
+			if checking {
+				<-reauthDone
+			}
+		}()
 		Debug("Serving %s", ip)
 		for {
 			select {
 			case <-r.Context().Done():
 				Info("Disconnected %s", ip)
 				return
+			case <-reauthC:
+				reauthC, checking = nil, true
+				go func() {
+					start := time.Now()
+					err := auth.Auth(r, client)
+					result, _ := authResult(err)
+					authDuration.WithLabelValues(result).Observe(time.Since(start).Seconds())
+					reauthDone <- err
+				}()
+			case err := <-reauthDone:
+				checking = false
+				result, _ := authResult(err)
+				reauthsTotal.WithLabelValues(result).Inc()
+				switch result {
+				case "refused":
+					reason = "reauth_refused"
+					Warn("Re-authentication failed for %s, closing its stream: %s", ip, err)
+					return
+				case "error":
+					// Kept: a dmbcau restart must not drop every browser.
+					Error("Re-authentication error for %s (stream kept, next check in %s): %s", ip, reauth, err)
+				default:
+					Debug("Re-authenticated %s", ip)
+				}
+				reauthTimer.Reset(reauth)
+				reauthC = reauthTimer.C
 			case msg, ok := <-client.out:
 				if !ok {
 					reason = "dropped"

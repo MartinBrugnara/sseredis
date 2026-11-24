@@ -60,6 +60,23 @@ groups:
             The Django authenticator API is down, times out or answers 5xx, so users cannot open live
             updates. (Refused sessions are not counted.)
 
+      - alert: SseredisReauthErrors
+        # The share of the checks of open streams (-reauth) that fail: the streams are kept, but nobody is
+        # re-checked any more (a logged-out user keeps the stream). Only with checks (no 0/0).
+        expr: >-
+          (
+            sum by (instance) (rate(sseredis_reauths_total{job="sseredis", result="error"}[5m]))
+            / sum by (instance) (rate(sseredis_reauths_total{job="sseredis"}[5m]))
+            and sum by (instance) (rate(sseredis_reauths_total{job="sseredis"}[5m])) > 0
+          ) > 0.05
+        for: 10m
+        labels: {service: sseredis, severity: warning}
+        annotations:
+          summary: 'sseredis {{ $labels.instance }}: {{ humanizePercentage $value }} of the stream checks fail'
+          description: >-
+            The Django authenticator API is down, times out or answers 5xx: open live-update streams stay
+            open but are not re-checked (logout, permissions) until it answers again.
+
       - alert: SseredisAuthSlow
         # p95 of the authentication time; only with authentications (no NaN).
         expr: >-
